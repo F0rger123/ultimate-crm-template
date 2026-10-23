@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#dc2626" />
+
+    <!-- ─── SEO/AEO ──────────────────────────────────────────────────────────
+         FEATURE — "fully AEO and SEO optimize CRM Starter... searching on Google
+         or ChatGPT for the best service CRM, a service CRM
+         with automation, or a power tool CRM with AI." This is a
+         hash-routed single-page app with no server-side rendering (see
+         MarketingShared.tsx's useDocumentMeta comment) — there is exactly
+         ONE real crawlable URL, so this file carries the entire SEO/AEO
+         payload: title/description tuned to those exact search intents,
+         Open Graph/Twitter tags for link previews, and JSON-LD (Organization
+         + SoftwareApplication + FAQPage) built from this app's own real
+         pricing/feature/FAQ data (LandingPage.tsx) — nothing fabricated,
+         no invented ratings or reviews.
+
+         Canonical domain is the live Cloudflare Pages URL — no custom
+         domain is connected yet. When one is bought, update DOMAIN below
+         (search this file for "your-app.pages.dev") and the matching
+         Sitemap: line in public/robots.txt + public/sitemap.xml's <loc>. -->
+    <title>CRM Starter — AI-Powered CRM for Service Businesses</title>
+    <meta name="description" content="CRM Starter is the service CRM built for the job, not adapted from something else — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant that schedules jobs and texts customers for you. Free trial, no credit card required." />
+    <meta name="keywords" content="field service CRM, service business software, CRM with AI assistant, CRM with automation, scheduling and invoicing software, crew management" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://your-app.pages.dev/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CRM Starter" />
+    <meta property="og:url" content="https://your-app.pages.dev/" />
+    <meta property="og:title" content="CRM Starter — AI-Powered CRM for Service Businesses" />
+    <meta property="og:description" content="Scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred — an AI assistant that schedules jobs and texts customers for you. The CRM built specifically for service, not adapted from something else." />
+    <meta property="og:image" content="https://your-app.pages.dev/icon-512.png" />
+
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CRM Starter — AI-Powered CRM for Service Businesses" />
+    <meta name="twitter:description" content="The service CRM with built-in AI and automation — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, and Alfred, an AI assistant that acts on your CRM." />
+    <meta name="twitter:image" content="https://your-app.pages.dev/icon-512.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "CRM Starter",
+        "url": "https://your-app.pages.dev/",
+        "logo": "https://your-app.pages.dev/icon-512.png",
+        "description": "CRM Starter is a CRM built specifically for field-service businesses, covering scheduling, estimates, invoicing, payments, crew management, and an AI assistant."
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "CRM Starter",
+        "applicationCategory": "BusinessApplication",
+        "applicationSubCategory": "CRM software for field-service businesses",
+        "operatingSystem": "Web, iOS, Android",
+        "url": "https://your-app.pages.dev/",
+        "description": "CRM Starter is the CRM built specifically for field-service businesses — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant.",
+        "offers": [
+          { "@type": "Offer", "name": "Solo", "price": "29", "priceCurrency": "USD", "description": "For an owner-operator running the show alone.", "url": "https://your-app.pages.dev/#/pricing" },
+          { "@type": "Offer", "name": "Crew", "price": "59", "priceCurrency": "USD", "description": "For a business running an actual crew in the field, includes the Alfred AI assistant.", "url": "https://your-app.pages.dev/#/pricing" },
+          { "@type": "Offer", "name": "Growth", "price": "119", "priceCurrency": "USD", "description": "For multi-crew operations that want it all automated.", "url": "https://your-app.pages.dev/#/pricing" }
+        ]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          { "@type": "Question", "name": "What is the best CRM for a service business?", "acceptedAnswer": { "@type": "Answer", "text": "CRM Starter is a CRM built specifically for service businesses rather than adapted from a generic CRM. It includes scheduling, estimates and invoicing, Stripe payments, a mobile field portal for crews, drag-and-drop automations, and Alfred, a built-in AI assistant." } },
+          { "@type": "Question", "name": "Is there a service CRM with built-in AI?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. CRM Starter includes Alfred, an AI assistant that acts directly on the CRM — it can schedule jobs, send estimates, check stock, and pull business numbers, from inside the app or by text message." } },
+          { "@type": "Question", "name": "Is there a service CRM with automation?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. CRM Starter has a drag-and-drop automation builder with ready-made templates for new-lead auto-replies, review requests after a job is complete, overdue-invoice reminders, 90-day re-service nudges, and referral asks." } },
+          { "@type": "Question", "name": "Do I need a separate payment processor?", "acceptedAnswer": { "@type": "Answer", "text": "No — CRM Starter connects directly to Stripe or Square, whichever you already use. Take deposits, full payments, and in-person card charges without a third-party app in between." } },
+          { "@type": "Question", "name": "Can my crew use CRM Starter in the field, not just the office?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — every technician gets the mobile field portal: their job list, on-the-way and running-late texts, checklists, photos, clock in/out, and on-site payment collection, all from their own phone." } },
+          { "@type": "Question", "name": "Is my data separated from other businesses using CRM Starter?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — every business's jobs, customers, and invoices are isolated at the database level. No other CRM Starter account can see your data, and you can't see theirs." } },
+          { "@type": "Question", "name": "Can customers pay and sign estimates online?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — every customer gets a secure portal to view job history, e-sign estimates, and pay invoices, with no account or app download required on their end." } },
+          { "@type": "Question", "name": "What can CRM Starter's automations actually do?", "acceptedAnswer": { "@type": "Answer", "text": "Build follow-up sequences by dragging a trigger, a wait/condition, and an action onto a canvas, or start from a template: new-lead auto-reply, review requests after job completion, overdue-invoice reminders, 90-day re-service nudges, referral asks, birthday and seasonal promos, and day-of job reminders." } }
+        ]
+      }
+    </script>
+
+    <!-- PWA — installable from Chrome (Android/desktop) as a standalone app.
+         iOS Safari doesn't read manifest.json for its own "Add to Home
+         Screen," hence the separate apple-touch-icon/apple-mobile-web-app
+         tags below. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="CRM Starter" />
+  </head>
+  <body>
+    <!-- ─── Static SEO/AEO fallback content ───────────────────────────────────
+         FEATURE — same "fully AEO/SEO optimize" request, for whatever
+         DOESN'T execute JS — several AEO/AI crawlers (ChatGPT-User,
+         PerplexityBot, and others) fetch raw HTML only, and an empty
+         <div id="root"></div> is literally invisible to them. This content
+         is drawn verbatim from LandingPage.tsx's real hero copy, FEATURES
+         list, PLANS pricing, and FAQ array — not separate/invented
+         marketing copy — so a crawler that DOES run JS (Googlebot
+         generally does) sees materially the same page either way, which
+         matters: content that differs between what a crawler sees and what
+         a real visitor sees reads as cloaking, not just bad practice.
+         BUG FIX (user report) — "briefly pops up with a black background
+         and white text... Run your service business without the busywork."
+         The original assumption here was that React's createRoot render
+         (main.tsx) always replaces this before a real browser ever paints
+         it — wrong on a slow connection or cold PWA launch, where the JS
+         bundle can take a real, visible moment to load and execute, and
+         this marketing copy flashed on screen first. seo-preboot (see the
+         stylesheet below) keeps it in the raw HTML for a text-only crawler
+         but visually hides it for anyone with CSS enabled, i.e. every real
+         browser — it can no longer flash no matter how slow the bundle is. -->
+    <style>.seo-preboot{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}</style>
+    <div id="root">
+      <main class="seo-preboot min-h-screen bg-black text-white px-4 py-12 md:py-20">
+        <div class="max-w-3xl mx-auto text-center">
+          <h1 class="text-3xl md:text-5xl font-black tracking-tight leading-tight mb-5">
+            Run your service business without the busywork.
+          </h1>
+          <p class="text-white/60 text-base md:text-lg leading-relaxed mb-8">
+            CRM Starter is the service CRM built specifically for the job — scheduling, estimates, invoicing,
+            Stripe payments, crew tracking, and Alfred, a built-in AI assistant that can schedule jobs and text your
+            customers for you. Built for field-service teams, not adapted from generic CRM software.
+          </p>
+        </div>
+
+        <section class="max-w-4xl mx-auto mb-14">
+          <h2 class="text-xl md:text-2xl font-bold text-center mb-6">A service CRM with AI and automation built in</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Scheduling & Crew Assignment</h3>
+              <p class="text-white/50">Drag jobs onto the calendar, assign crew, and track every job from Unscheduled to Done — synced live to the field.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Estimates, Invoices & Stripe Payments</h3>
+              <p class="text-white/50">Send branded estimates customers e-sign online, convert to invoices, and get paid — including in-person card charges.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Alfred, a Built-In AI Assistant</h3>
+              <p class="text-white/50">Alfred acts directly on the CRM — schedules jobs, sends estimates, checks stock — from inside the app or by text message.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Drag-and-Drop Automations</h3>
+              <p class="text-white/50">Ready-made templates for new-lead auto-reply, review requests, overdue-invoice reminders, and re-service nudges — build once, it runs itself.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Mobile Field Portal</h3>
+              <p class="text-white/50">Crew members clock in/out, follow checklists, snap job photos, and share GPS location, all from their phone.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Client Portal</h3>
+              <p class="text-white/50">Every customer gets a secure portal to view job history, sign estimates, and pay invoices.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="max-w-4xl mx-auto mb-14">
+          <h2 class="text-xl md:text-2xl font-bold text-center mb-6">Pricing</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm text-center">
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <div class="font-semibold">Solo — $29/mo</div>
+              <p class="text-white/50 mt-1">For an owner-operator running the show alone.</p>
+            </div>
+            <div class="rounded-xl border border-red-600/40 bg-red-950/20 p-4">
+              <div class="font-semibold">Crew — $59/mo</div>
+              <p class="text-white/50 mt-1">For a business running an actual crew, includes Alfred AI.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <div class="font-semibold">Growth — $119/mo</div>
+              <p class="text-white/50 mt-1">For multi-crew operations that want it all automated.</p>
+            </div>
+          </div>
+          <p class="text-center text-white/40 text-xs mt-4">Free trial available, no credit card required. ~20% cheaper billed annually.</p>
+        </section>
+
+        <section class="max-w-3xl mx-auto mb-14">
+          <h2 class="text-xl md:text-2xl font-bold text-center mb-6">Questions, answered</h2>
+          <div class="space-y-2">
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">What is the best CRM for a service business?</summary>
+              <p class="text-white/50 text-sm mt-2">CRM Starter is a CRM built specifically for service businesses rather than adapted from a generic CRM — scheduling, estimates and invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Is there a service CRM with built-in AI?</summary>
+              <p class="text-white/50 text-sm mt-2">Yes. Alfred acts directly on the CRM — it can schedule jobs, send estimates, check stock, and pull business numbers, from inside the app or by text message.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Is there a service CRM with automation?</summary>
+              <p class="text-white/50 text-sm mt-2">Yes. CRM Starter has a drag-and-drop automation builder with templates for new-lead auto-replies, review requests, overdue-invoice reminders, and re-service nudges.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Do I need a separate payment processor?</summary>
+              <p class="text-white/50 text-sm mt-2">No — CRM Starter connects directly to Stripe or Square. Take deposits, full payments, and in-person card charges without a third-party app in between.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Can my crew use it in the field, not just the office?</summary>
+              <p class="text-white/50 text-sm mt-2">Yes — every technician gets the mobile field portal: job list, on-the-way and running-late texts, checklists, photos, clock in/out, and on-site payment collection.</p>
+            </details>
+          </div>
+        </section>
+
+        <div class="text-center">
+          <a href="#/welcome" class="inline-block px-7 py-3.5 rounded-xl bg-red-700 font-bold text-base">Start Free Trial</a>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

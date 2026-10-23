@@ -1,0 +1,33 @@
+# Dependencies & build output
+node_modules
+dist
+*.tsbuildinfo
+
+# Environment / secrets — never commit real values. .env.example is the template.
+.env
+.env.local
+.env.production
+.env.development
+.env.*
+!.env.example
+.dev.vars
+.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local data that must never reach git
+*.sql.gz
+*.dump
+backups/
+exports/
+
+# Tooling
+.wrangler/
+.claude/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.log

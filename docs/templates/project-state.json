@@ -1,0 +1,28 @@
+{
+  "_comment": "Quick index for agents. The Markdown files in docs/client/ are the source of truth; keep this in sync at the end of each session.",
+  "project": {
+    "name": null,
+    "client_business": null,
+    "industry": null,
+    "repo": null,
+    "starter_repo": "https://github.com/F0rger123/ultimate-crm-template",
+    "production_url": null,
+    "supabase_project_ref": null
+  },
+  "onboarding": {
+    "status": "not_started",
+    "current_phase": null,
+    "completed_on": null
+  },
+  "current_roadmap_phase": null,
+  "active_ids": [],
+  "open_bugs": [],
+  "blocked_ids": [],
+  "needs_testing_ids": [],
+  "open_questions": [],
+  "last_handoff": {
+    "date": null,
+    "agent": null,
+    "commit": null
+  }
+}

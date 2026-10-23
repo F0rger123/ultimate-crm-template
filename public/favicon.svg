@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- BUG FIX — "the download app logo doesn't fit fully; the corners are
+       cut off." The old design (a small person silhouette + narrow letters)
+       had almost no clearance from the icon edges, so OS-applied icon masks
+       (rounded square on iOS, circle/squircle on Android adaptive icons)
+       clipped it. Replaced per explicit request: solid black background,
+       plain white "C" + red "S", same font stack as the in-app "CRM Starter"
+       wordmark (index.css's base font-family) instead of a generic font,
+       both letters kept well clear of every edge so any OS mask shape
+       still shows the whole mark. -->
+  <rect width="100" height="100" rx="20" fill="#000000"/>
+  <text x="32" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="48" fill="#ffffff" text-anchor="middle">C</text>
+  <text x="68" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="48" fill="#dc2626" text-anchor="middle">S</text>
+</svg>

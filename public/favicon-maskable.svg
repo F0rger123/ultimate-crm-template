@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Maskable-purpose source (feeds icon-maskable-512.png only). Android
+       adaptive icons crop to their own shape (circle, squircle, rounded
+       square depending on the launcher) and only guarantee content inside
+       the center ~66-80% "safe zone" survives — so this version fills the
+       ENTIRE canvas edge-to-edge with the background (no rounded corners;
+       the OS supplies the shape) and keeps the letters noticeably smaller/
+       tighter to center than the regular favicon above. -->
+  <rect width="100" height="100" fill="#000000"/>
+  <text x="34" y="63" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="34" fill="#ffffff" text-anchor="middle">C</text>
+  <text x="66" y="63" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="34" fill="#dc2626" text-anchor="middle">S</text>
+</svg>

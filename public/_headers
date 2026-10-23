@@ -1,0 +1,9 @@
+# Cloudflare Pages static asset headers.
+# Fixed-name media (anything you add under /media/) doesn't get a content hash
+# like the Vite bundle does, so cap how long caches may serve an old copy.
+/media/*
+  Cache-Control: public, max-age=3600, must-revalidate
+
+# The service worker must always be revalidated so app updates roll out.
+/sw.js
+  Cache-Control: no-cache

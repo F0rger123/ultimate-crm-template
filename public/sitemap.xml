@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CRM Starter is a hash-routed single-page app (#/features, #/pricing, #/about
+  all live under this one real URL — see App.tsx's page-resolution state and
+  MarketingShared.tsx's comment on useDocumentMeta). A URL fragment (#...) is
+  not a separately crawlable/indexable address to a search engine, so this
+  sitemap lists the one real URL rather than four fragment "pages" that would
+  just look like duplicate/thin content to a crawler. If this site ever moves
+  to real path-based routing (/features, /pricing, /about as distinct URLs),
+  add each as its own <url> entry here.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://your-app.pages.dev/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>

@@ -1,0 +1,288 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THEME TOKENS — the ONE place to change a client's colors.
+   Values are RGB triplets ("R G B") so Tailwind opacity modifiers work
+   (bg-brand-600/30). Tailwind maps these in tailwind.config.js:
+     brand-*   → accent/primary (buttons, active nav, focus, highlights)
+     brand-fg  → text/icons drawn ON a solid brand surface
+     danger-*  → destructive / error / overdue only (semantic, not brand)
+     surface / surface-2 / ink / ink-soft / edge → base surfaces & text
+   The starter default is monochrome: brand = white on near-black.
+   To rebrand (e.g. blue): set --brand-50…950 to a blue scale and --brand-fg
+   to 255 255 255. See docs/ARCHITECTURE.md → "Theming".
+   Note: brand shade numbers are ROLES, not a strict light→dark ramp:
+     300–500 light accent text/icons · 500–800 solid fills (buttons) ·
+     900–950 low-opacity tints/borders (bg-brand-950/30, border-brand-900/40).
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --brand-50: 255 255 255;
+  --brand-100: 250 250 250;
+  --brand-200: 245 245 245;
+  --brand-300: 229 229 229;
+  --brand-400: 212 212 212;
+  --brand-500: 245 245 245;
+  --brand-600: 255 255 255;
+  --brand-700: 229 229 229;
+  --brand-800: 212 212 212;
+  --brand-900: 163 163 163;
+  --brand-950: 138 138 138;
+  --brand-fg: 10 10 10;
+
+  --danger-50: 254 242 242;
+  --danger-100: 254 226 226;
+  --danger-200: 254 202 202;
+  --danger-300: 252 165 165;
+  --danger-400: 248 113 113;
+  --danger-500: 239 68 68;
+  --danger-600: 220 38 38;
+  --danger-700: 185 28 28;
+  --danger-800: 153 27 27;
+  --danger-900: 127 29 29;
+  --danger-950: 69 10 10;
+
+  /* Hex versions for places that need a plain color string (charts, inline
+     styles, glow effects). Keep in sync with the scales above. */
+  --brand: #ffffff;
+  --brand-accent: #a3a3a3;
+  --chart-1: #ffffff;
+  --chart-2: #a3a3a3;
+  --chart-3: #525252;
+  --chart-grid: #262626;
+  --glow: 255 255 255;
+
+  /* Base surfaces (dark default). App.tsx sets data-theme="light" on <html>
+     when settings.theme === "light"; only components using these tokens
+     react to it. */
+  --surface-rgb: 0 0 0;         /* card/glass background */
+  --surface-2-rgb: 255 255 255; /* secondary surface (white/5 equivalents) */
+  --ink-rgb: 255 255 255;       /* primary text */
+  --ink-soft-rgb: 255 255 255;  /* secondary text (used with lower alpha) */
+  --edge-rgb: 64 64 64;         /* border */
+  --app-bg: #050505;
+}
+
+:root[data-theme="light"] {
+  --surface-rgb: 255 255 255;
+  --surface-2-rgb: 0 0 0;
+  --ink-rgb: 17 17 17;
+  --ink-soft-rgb: 17 17 17;
+  --edge-rgb: 0 0 0;
+  --app-bg: #f7f7f8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* MOBILE HEADER FIX — html/body/#root must have a hard, non-growing height
+   (not just min-height) so the app's own `h-dvh overflow-hidden` root div
+   (App.tsx) is the ONLY thing that ever scrolls. Without this, if any
+   descendant's flex sizing ever fails to constrain itself (missing
+   min-h-0 on a nested flex-1 column, a fixed-height guess like the old
+   h-screen on mobile Safari where 100vh can exceed the true visible
+   viewport, etc.), the overflow escapes onto the <body> — which page-
+   scrolls as a normal block element, dragging the top bar/profile
+   avatar/notifications bell off-screen with it since they're not
+   independently pinned to the viewport, only to their (now-scrolling)
+   flex ancestor. Locking body/html/#root to 100% + overflow hidden means
+   that failure mode simply can't happen — only the intentional
+   `overflow-y-auto` panes inside the app (conversation list, message
+   thread, page content, etc.) can ever scroll.
+*/
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* iPhone: stop double-tap zoom / text inflation (viewport meta locks scale). */
+html {
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--app-bg);
+  color: rgb(var(--ink-rgb));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--glow) / 0.15); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--glow) / 0.3); }
+
+/* Tailwind animations used by components */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgb(var(--glow) / 0.4); }
+  70%  { box-shadow: 0 0 0 10px rgb(var(--glow) / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--glow) / 0); }
+}
+
+.animate-fade-in     { animation: fade-in 0.3s ease both; }
+.animate-slide-right { animation: slide-in-right 0.25s ease both; }
+.animate-pulse-ring  { animation: pulse-ring 2s ease infinite; }
+
+/* FEATURE — "add an animation when Alfred is talking." Alfred Voice Mode's
+   speaking indicator — a lively staggered bar bounce (via animation-delay
+   per bar), not truly amplitude-synced to the actual speech audio (the
+   Web Speech Synthesis API doesn't expose that), but reads clearly as
+   "talking" the same way most voice-assistant UIs fake it. */
+@keyframes speaking-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1); }
+}
+.animate-speaking-bar { animation: speaking-bar 0.9s ease-in-out infinite; transform-origin: center; }
+
+/* Voice Mode — ambient background drift, orb breathing glow, and a slow
+   spinning ring accent, used to make the full-screen call overlay feel
+   alive/premium instead of a static flat panel. */
+@keyframes voice-float-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(3%, 4%) scale(1.08); }
+}
+@keyframes voice-float-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-4%, -3%) scale(1.1); }
+}
+@keyframes voice-orb-glow {
+  0%, 100% { box-shadow: 0 0 40px 4px var(--orb-glow, rgb(var(--glow) / 0.35)); }
+  50%      { box-shadow: 0 0 64px 14px var(--orb-glow, rgb(var(--glow) / 0.5)); }
+}
+.animate-voice-float-a { animation: voice-float-a 9s ease-in-out infinite; }
+.animate-voice-float-b { animation: voice-float-b 11s ease-in-out infinite; }
+.animate-voice-orb-glow { animation: voice-orb-glow 2.6s ease-in-out infinite; }
+
+/* BUG FIX — the highlightBox portal overlay (App.tsx — both the voice
+   screen-reference highlight and Alfred's action spotlight) used to pair
+   an inline box-shadow with the existing .animate-pulse-ring class —
+   but a running CSS animation overrides ANY value (inline or not) on the
+   property it's animating for its whole duration, so pulse-ring's own
+   keyframes (which fade to fully transparent, 0 opacity, at both ends —
+   correct for a small notification "ping," never meant for a sustained
+   glow) were all that ever actually rendered; the inline glow was
+   invisible the entire time. This alternates between two ALWAYS-VISIBLE
+   highlight intensities — never drops to zero — so there's a real
+   persistent glow, not an intermittent flash. */
+@keyframes neon-red-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgb(var(--glow) / 0.75), 0 0 22px 6px rgb(var(--glow) / 0.7), 0 0 44px 16px rgb(var(--glow) / 0.4); }
+  50%      { box-shadow: 0 0 0 4px rgb(var(--glow) / 0.95), 0 0 32px 10px rgb(var(--glow) / 0.9), 0 0 60px 22px rgb(var(--glow) / 0.55); }
+}
+.animate-neon-red-pulse { animation: neon-red-pulse 1s ease-in-out infinite; }
+.animate-spin-slow { animation: spin 6s linear infinite; }
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, rgb(var(--brand-600)), rgb(var(--brand-900)));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Line clamp */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Mobile responsiveness ────────────────────────────────────────────────── */
+
+/* Tables scroll horizontally rather than squishing on small screens */
+@media (max-width: 767px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+}
+
+/* Minimum 44px touch targets on interactive elements on mobile */
+@media (max-width: 767px) {
+  button:not(.no-min-height),
+  a[role="button"],
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Small inline icon buttons (e.g. X, close) should stay compact */
+  button.p-1,
+  button.p-1\.5 {
+    min-height: unset;
+    min-width: unset;
+  }
+}
+
+/* Prevent horizontal overflow on small screens — the main content areas
+   should never extend past the viewport width */
+@media (max-width: 767px) {
+  main, .main-content {
+    overflow-x: hidden;
+  }
+
+  /* Inputs, selects, textareas are always full-width on mobile */
+  input[type="text"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="number"],
+  input[type="password"],
+  input[type="date"],
+  select,
+  textarea {
+    max-width: 100%;
+    width: 100%;
+  }
+}
+
+/* Pipeline / kanban horizontal scroll on mobile */
+@media (max-width: 767px) {
+  .pipeline-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Utility: table-scroll wrapper — add class "table-scroll" around any <table> for contained scroll */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+/* Prevent fixed-column grids from overflowing on very narrow screens.
+   Components that use grid-cols-3 or grid-cols-4 without breakpoints get
+   this safety net via Tailwind's arbitrary selector. */
+@media (max-width: 400px) {
+  .grid.grid-cols-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid.grid-cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

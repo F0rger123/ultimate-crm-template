@@ -1,0 +1,50 @@
+# CRM Starter — public marketing site crawl rules.
+# Everything under the app itself (owner CRM, employee portal, client portal)
+# requires a real login and returns no content to a logged-out crawler anyway
+# — nothing there needs a Disallow, there's simply nothing to index.
+User-agent: *
+Allow: /
+
+# ─── AI / answer-engine crawlers (AEO) — explicitly allowed, not just left to
+# the default. Several of these respect robots.txt for training AND for
+# live-answer retrieval (e.g. ChatGPT-User, PerplexityBot fetch pages in
+# response to a real user question) — blocking them by accident is the
+# single most common reason a real product never gets cited by name in an
+# AI answer engine.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+Sitemap: https://your-app.pages.dev/sitemap.xml
