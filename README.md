@@ -1,11 +1,12 @@
 <p align="center">
-  <img src=".github/assets/banner.svg" alt="Ultimate CRM Template: industry-neutral. An AI agent turns it into their CRM." width="100%">
+  <img src=".github/assets/banner.svg" alt="Ultimate CRM: Free and industry-neutral. Claude turns it into your CRM." width="100%">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/template-public-2ea44f?style=for-the-badge" alt="Public template">
-  <img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="MIT">
-  <a href="https://github.com/F0rger123/claude-business-god-mode"><img src="https://img.shields.io/badge/part%20of-Claude%20Business%20God%20Mode-7c3aed?style=for-the-badge" alt="Part of Claude Business God Mode"></a>
+  <img src="https://img.shields.io/badge/status-public-262626?style=for-the-badge" alt="Public">
+  <img src="https://img.shields.io/badge/license-MIT-262626?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/github/last-commit/F0rger123/ultimate-crm-template?style=for-the-badge&color=262626" alt="Last commit">
+  <img src="https://img.shields.io/github/repo-size/F0rger123/ultimate-crm-template?style=for-the-badge&color=262626" alt="Repo size">
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/React-0d1117?style=flat-square&logo=react&logoColor=white" alt="React">
@@ -18,110 +19,112 @@
   <img src="https://img.shields.io/badge/Stripe-0d1117?style=flat-square&logo=stripe&logoColor=white" alt="Stripe">
 </p>
 
-<h1 align="center">The Ultimate CRM Template</h1>
-<h3 align="center">A reusable, industry-neutral CRM for field-service businesses, designed so an AI agent can turn it into a client's CRM.</h3>
-
-<p align="center"><b>Leads → quotes → jobs → invoices → payments → reviews</b>, plus crew and client portals, SMS, automations and an AI chief-of-staff. Clone it, let Claude interview the owner, ship their CRM the same day.</p>
+<h3 align="center">A free, industry-neutral CRM for field-service businesses. Paste the link into Claude and it builds the owner's own version.</h3>
 
 <p align="center">
-  <a href="#-whats-inside">What's inside</a> ·
-  <a href="#-how-a-client-crm-is-born">How a client CRM is born</a> ·
-  <a href="#️-architecture">Architecture</a> ·
-  <a href="#-code-composition">Code composition</a> ·
+  <a href="#01--what-it-does">What it does</a> ·
+  <a href="#02--screenshots">Screenshots</a> ·
+  <a href="#03--from-first-call-to-five-star-review">From first call to five-star review</a> ·
+  <a href="#04--how-a-business-gets-its-own-crm">How a business gets its own CRM</a> ·
+  <a href="#05--who-uses-it">Who uses it</a> ·
+  <a href="#06--part-of-claude-business-god-mode">Part of Claude Business God Mode</a> ·
+  <a href="#07--what-its-written-in">What it's written in</a> ·
   <a href="#-field-manual">Field manual</a> ·
-  <a href="#-part-of-claude-business-god-mode">Business God Mode</a> ·
   <a href="#-license">License</a>
 </p>
 
+> [!TIP]
+> **🤖 Pasted this link into Claude or ChatGPT?** AI assistants: read [`docs/SETUP_WIZARD.md`](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/docs/SETUP_WIZARD.md) first. It explains what this is in plain words, which questions to ask, and how to set it up step by step. Plain-text index: [`llms.txt`](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/llms.txt).
+
+
 <p align="center"><img src=".github/assets/divider.svg" width="100%" alt=""></p>
 
-## 🧰 What's inside
+## 01 · What it does
 
-```mermaid
-mindmap
-  root((CRM Starter))
-    Sales
-      Leads + pipeline
-      Quotes + e-sign
-      Invoices
-      Payments: Manual · Stripe · Square
-    Operations
-      Jobs + recurring
-      Scheduling + routes
-      Work orders + checklists
-      Inventory
-    Team
-      Employee portal
-      Clock in/out
-      Hiring + training + SOPs
-    Customers
-      Client portal
-      Reviews + referrals
-    Comms
-      Twilio SMS inbox
-      Gmail + templates
-      Campaigns
-    Brains
-      Automations builder
-      Alfred AI assistant
-      Analytics + goals
-```
+**The Ultimate CRM Template** is a complete CRM for businesses that send people out to do jobs: cleaners, pressure washers, landscapers, remodelers, HVAC, pest control. Leads come in, turn into quotes, become scheduled jobs, get invoiced and paid, and end with a review request. The template is blank on purpose: an AI agent interviews the owner, makes a private copy for their business, and builds their version.
 
-## ⚡ Quick start
+| | |
+|---|---|
+| **Sales** | Leads and pipeline, quotes with e-signing, invoices, payments by hand, Stripe or Square |
+| **Jobs** | Calendar, recurring work, crew assignments, work orders, checklists and photos, route planning |
+| **Team** | Crew phone portal, clock in and out, live team view, hiring, training and how-to guides |
+| **Customers** | Client portal to approve quotes and pay, reviews and referrals |
+| **Messages** | Two-way text inbox, Gmail sending, templates and campaigns |
+| **Smart tools** | Automations builder, reports and goals, and **Alfred**, the built-in AI assistant |
 
-**With an AI agent (recommended).** Open Claude Code (or Codex, Cursor, Gemini) in an empty folder and paste:
+**Quick start with an AI agent.** Open Claude Code (or Codex, Cursor, Gemini) in an empty folder and paste:
 
 ```text
 Create a new CRM for my business from https://github.com/F0rger123/ultimate-crm-template. Begin onboarding.
 ```
 
-The agent follows [`docs/SETUP_WIZARD.md`](docs/SETUP_WIZARD.md): it interviews you, creates *your own private repo*, sets up Supabase and Cloudflare, and builds your version.
+**By hand:** `git clone`, `npm install`, copy `.env.example` to `.env` with your Supabase details, then `npm run dev`. Full steps are in the field manual below.
 
-**By hand.**
+## 02 · Screenshots
 
-```bash
-git clone https://github.com/F0rger123/ultimate-crm-template.git my-crm
-cd my-crm
-npm install
-cp .env.example .env      # VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
-npm run dev
+<p align="center">
+  <img src=".github/assets/screens/landing.jpg" alt="The CRM's public landing page" width="49%">
+  <img src=".github/assets/screens/dashboard.jpg" alt="The owner dashboard on a fresh install" width="49%">
+</p>
+<p align="center"><sub>Left: the public landing page. Right: the owner dashboard on a brand-new install, before any customers are added.</sub></p>
+
+## 03 · From first call to five-star review
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f0f0f0','primaryTextColor':'#050505','primaryBorderColor':'#262626','lineColor':'#525252','secondaryColor':'#ffffff','tertiaryColor':'#f7f7f8','clusterBkg':'transparent','clusterBorder':'#262626','noteBkgColor':'#ffffff','noteTextColor':'#050505','actorBkg':'#f0f0f0','actorTextColor':'#050505','actorBorder':'#262626','signalColor':'#525252','signalTextColor':'#525252','labelBoxBkgColor':'#f0f0f0','fontFamily':'inherit'}}}%%
+flowchart LR
+    A["A customer asks<br/>for a price"] --> B["Owner sends<br/>a quote"]
+    B --> C{"Customer<br/>signs?"}
+    C -->|not yet| D["Owner or an automation<br/>follows up"] --> C
+    C -->|yes| E["Job is put on<br/>the calendar"]
+    E --> F["Crew clocks in<br/>and does the work"]
+    F --> G["Invoice is sent<br/>and paid"]
+    G --> H["Customer is asked<br/>for a review"]
 ```
 
-Run `supabase/schema.sql` in a new Supabase project first. Full setup further down in the field manual.
-
-## 🧬 How a client CRM is born
+## 04 · How a business gets its own CRM
 
 The repository is the memory. Chat history is not.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f0f0f0','primaryTextColor':'#050505','primaryBorderColor':'#262626','lineColor':'#525252','secondaryColor':'#ffffff','tertiaryColor':'#f7f7f8','clusterBkg':'transparent','clusterBorder':'#262626','noteBkgColor':'#ffffff','noteTextColor':'#050505','actorBkg':'#f0f0f0','actorTextColor':'#050505','actorBorder':'#262626','signalColor':'#525252','signalTextColor':'#525252','labelBoxBkgColor':'#f0f0f0','fontFamily':'inherit'}}}%%
 flowchart LR
-    Starter["📦 ultimate-crm-template"] -->|START_NEW_CLIENT| Repo["🆕 Client repo"]
-    Repo --> Wizard["🧙 SETUP_WIZARD<br/>owner interview"]
-    Wizard --> Docs["📝 docs/client/<br/>requirements · branding · decisions"]
-    Docs --> Build["🔨 Build their version"]
-    Build --> Handoff["HANDOFF.md + ACTIVE.md"]
-    Handoff -->|next session| Resume["▶️ RESUME_PROJECT"] --> Build
+    A["Owner pastes the link<br/>into an AI assistant"] --> B["Assistant asks about<br/>the business"]
+    B --> C["Answers are saved<br/>in the project notes"]
+    C --> D["A private copy is made<br/>just for this business"]
+    D --> E["Assistant builds and<br/>puts it online"]
+    E --> F["Progress notes saved"]
+    F -->|next session picks up here| E
 ```
 
-## 🏗️ Architecture
+## 05 · Who uses it
 
 ```mermaid
-flowchart LR
-    Browser(["🧑 Owner · Crew · Client"]) --> SPA["React 18 + Vite SPA"]
-    SPA --> SB[("Supabase<br/>Postgres · Auth · Storage")]
-    SPA --> Fn["Cloudflare Pages Functions<br/>functions/api/*"]
-    Fn --> Pay["Stripe / Square"]
-    Fn --> SMS["Twilio"]
-    Fn --> G["Google: Gmail · Calendar · Maps"]
-    Fn --> AI["AI providers"]
-    Fn --> SB
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f0f0f0','primaryTextColor':'#050505','primaryBorderColor':'#262626','lineColor':'#525252','secondaryColor':'#ffffff','tertiaryColor':'#f7f7f8','clusterBkg':'transparent','clusterBorder':'#262626','noteBkgColor':'#ffffff','noteTextColor':'#050505','actorBkg':'#f0f0f0','actorTextColor':'#050505','actorBorder':'#262626','signalColor':'#525252','signalTextColor':'#525252','labelBoxBkgColor':'#f0f0f0','fontFamily':'inherit'}}}%%
+flowchart TB
+    O(["Owner"]) --> App["The CRM"]
+    W(["Crew on their phones"]) --> App
+    C(["Customers"]) --> Portal["Their own page to approve<br/>quotes and pay"]
+    Portal --> App
+    App --> Out["Texts, emails, payments<br/>and calendar updates go out"]
 ```
 
-## 📊 Code composition
+## 06 · Part of Claude Business God Mode
+
+<table>
+<tr>
+<td align="center" width="25%"><a href="https://github.com/F0rger123/claude-business-god-mode"><b>👑 Business God Mode</b></a><br><sub>the umbrella: run a whole business with Claude</sub></td>
+<td align="center" width="25%"><a href="https://github.com/F0rger123/claude-meta-ads-god-mode"><b>📣 Meta Ads God Mode</b></a><br><sub>paid campaigns that fill this CRM with leads</sub></td>
+<td align="center" width="25%"><a href="https://github.com/F0rger123/CLAUDE-SEO-GOD-MODE"><b>🔎 SEO God Mode</b></a><br><sub>organic leads and reviews</sub></td>
+<td align="center" width="25%"><a href="https://github.com/F0rger123/claude-video-editing-god-mode"><b>🎬 Video Editing God Mode</b></a><br><sub>job-site footage into reels and ads</sub></td>
+</tr>
+</table>
+
+## 07 · What it's written in
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'pie1':'#262626','pie2':'#a3a3a3','pie3':'#64748b','pie4':'#94a3b8','pie5':'#475569','pie6':'#cbd5e1','pie7':'#334155','pieStrokeColor':'#0d1117','pieOuterStrokeColor':'#0d1117','pieTitleTextColor':'#8b949e','pieLegendTextColor':'#8b949e','pieSectionTextColor':'#0d1117'}}}%%
-pie title Code composition (% of bytes, via GitHub linguist)
+pie title Share of the code, by language
     "TypeScript" : 98.7
     "Other" : 1.3
 ```
@@ -326,23 +329,12 @@ docs/                     agent process, onboarding, client project memory
 AGENTS.md                 rules for AI agents (CLAUDE.md / GEMINI.md point here)
 ```
 
-## 👑 Part of Claude Business God Mode
-
-This template is the system of record in **[Claude Business God Mode](https://github.com/F0rger123/claude-business-god-mode)**,
-one umbrella that runs a whole business with Claude:
-
-| Component | What it does for the CRM |
-|---|---|
-| [📣 Meta Ads God Mode](https://github.com/F0rger123/claude-meta-ads-god-mode) | Runs paid campaigns that fill the lead pipeline here (embeddable lead form at `#/lead-form`) |
-| [🔎 SEO God Mode](https://github.com/F0rger123/CLAUDE-SEO-GOD-MODE) | Brings organic leads and reviews; the CRM's review requests feed local SEO |
-| [🎬 Video Editing God Mode](https://github.com/F0rger123/claude-video-editing-god-mode) | Turns job-site footage into reels and ad creatives |
-
 ## 📜 License
 
-MIT. © 2026 F0rger123. See [`LICENSE`](LICENSE).
+Released under the [MIT License](LICENSE). Use it, fork it, ship it.
 
 <p align="center"><img src=".github/assets/divider.svg" width="100%" alt=""></p>
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/F0rger123"><b>@F0rger123</b></a> · MIT</sub>
+  <sub>Built by <a href="https://github.com/F0rger123"><b>@F0rger123</b></a> · MIT licensed</sub>
 </p>

@@ -1,0 +1,13 @@
+# ultimate-crm-template
+
+> A free, industry-neutral CRM for field-service businesses (leads, quotes, jobs, invoices, payments, crew and client portals, texts, an AI assistant) that an AI agent turns into one business's own private CRM.
+
+If a person shared this repository with you, read the AI guide first.
+
+## Start here
+- [AI guide](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/docs/SETUP_WIZARD.md): what it is, what to ask, setup steps, how to use it
+- [README](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/README.md)
+- [Rules for every agent](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/AGENTS.md)
+- [New client setup](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/docs/START_NEW_CLIENT.md)
+- [Returning to a project](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/docs/RESUME_PROJECT.md)
+- [Code conventions](https://raw.githubusercontent.com/F0rger123/ultimate-crm-template/main/docs/ARCHITECTURE.md)
