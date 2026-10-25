@@ -62,11 +62,25 @@ Create a new CRM for my business from https://github.com/F0rger123/ultimate-crm-
 
 ## 02 · Screenshots
 
-<p align="center">
-  <img src=".github/assets/screens/landing.jpg" alt="The CRM's public landing page" width="49%">
-  <img src=".github/assets/screens/dashboard.jpg" alt="The owner dashboard on a fresh install" width="49%">
-</p>
-<p align="center"><sub>Left: the public landing page. Right: the owner dashboard on a brand-new install, before any customers are added.</sub></p>
+<table>
+  <tr>
+    <td width="50%"><img src=".github/assets/screens/jobs.jpg" alt="Jobs board with crew, price and start buttons"><br><sub><b>Jobs.</b> Every visit with its crew, price and one-tap Start.</sub></td>
+    <td width="50%"><img src=".github/assets/screens/calendar.jpg" alt="Month calendar with colour-coded jobs"><br><sub><b>Calendar.</b> Scheduled, in progress and done at a glance.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/screens/customers.jpg" alt="Customer list with phone and total spent"><br><sub><b>Customers.</b> Contact details, lifetime spend, import from CSV or Stripe.</sub></td>
+    <td width="50%"><img src=".github/assets/screens/quotes.jpg" alt="Quote cards with pending, approved and declined status"><br><sub><b>Quotes.</b> See which were viewed, approved or turned down, and why.</sub></td>
+  </tr>
+  <tr>
+    <td width="72%"><img src=".github/assets/screens/invoices.jpg" alt="Invoices with outstanding, paid and aging totals"><br><sub><b>Invoices.</b> What is owed, what is paid, and jobs still waiting for a bill.</sub></td>
+    <td width="28%"><img src=".github/assets/screens/phone.jpg" alt="Jobs page on a phone"><br><sub><b>On a phone.</b> Built for the truck as much as the office.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/screens/dashboard.jpg" alt="Owner dashboard with today's jobs and crew"><br><sub><b>Dashboard.</b> Today's jobs, crew on shift and money in one place.</sub></td>
+    <td width="50%"><img src=".github/assets/screens/landing.jpg" alt="Public landing page"><br><sub><b>Public site.</b> The landing page customers see.</sub></td>
+  </tr>
+</table>
+<p align="center"><sub>Shown with a made-up business and customers. A fresh install starts empty.</sub></p>
 
 ## 03 · From first call to five-star review
 
