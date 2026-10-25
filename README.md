@@ -3,10 +3,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-public-262626?style=for-the-badge" alt="Public">
-  <img src="https://img.shields.io/badge/license-MIT-262626?style=for-the-badge" alt="License">
-  <img src="https://img.shields.io/github/last-commit/F0rger123/ultimate-crm-template?style=for-the-badge&color=262626" alt="Last commit">
-  <img src="https://img.shields.io/github/repo-size/F0rger123/ultimate-crm-template?style=for-the-badge&color=262626" alt="Repo size">
+  <img src="https://img.shields.io/badge/status-public-171717?style=for-the-badge" alt="Public">
+  <img src="https://img.shields.io/badge/license-MIT-171717?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/github/last-commit/F0rger123/ultimate-crm-template?style=for-the-badge&color=171717" alt="Last commit">
+  <img src="https://img.shields.io/github/repo-size/F0rger123/ultimate-crm-template?style=for-the-badge&color=171717" alt="Repo size">
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/React-0d1117?style=flat-square&logo=react&logoColor=white" alt="React">
@@ -85,7 +85,7 @@ Create a new CRM for my business from https://github.com/F0rger123/ultimate-crm-
 ## 03 · From first call to five-star review
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f0f0f0','primaryTextColor':'#050505','primaryBorderColor':'#262626','lineColor':'#525252','secondaryColor':'#ffffff','tertiaryColor':'#f7f7f8','clusterBkg':'transparent','clusterBorder':'#262626','noteBkgColor':'#ffffff','noteTextColor':'#050505','actorBkg':'#f0f0f0','actorTextColor':'#050505','actorBorder':'#262626','signalColor':'#525252','signalTextColor':'#525252','labelBoxBkgColor':'#f0f0f0','fontFamily':'inherit'}}}%%
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#171717','primaryTextColor':'#fafafa','primaryBorderColor':'#e5e5e5','lineColor':'#a3a3a3','secondaryColor':'#0a0a0a','tertiaryColor':'#262626','clusterBkg':'transparent','clusterBorder':'#e5e5e5','noteBkgColor':'#0a0a0a','noteTextColor':'#fafafa','actorBkg':'#171717','actorTextColor':'#fafafa','actorBorder':'#e5e5e5','signalColor':'#a3a3a3','signalTextColor':'#a3a3a3','labelBoxBkgColor':'#171717','fontFamily':'inherit'}}}%%
 flowchart LR
     A["A customer asks<br/>for a price"] --> B["Owner sends<br/>a quote"]
     B --> C{"Customer<br/>signs?"}
@@ -101,7 +101,7 @@ flowchart LR
 The repository is the memory. Chat history is not.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f0f0f0','primaryTextColor':'#050505','primaryBorderColor':'#262626','lineColor':'#525252','secondaryColor':'#ffffff','tertiaryColor':'#f7f7f8','clusterBkg':'transparent','clusterBorder':'#262626','noteBkgColor':'#ffffff','noteTextColor':'#050505','actorBkg':'#f0f0f0','actorTextColor':'#050505','actorBorder':'#262626','signalColor':'#525252','signalTextColor':'#525252','labelBoxBkgColor':'#f0f0f0','fontFamily':'inherit'}}}%%
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#171717','primaryTextColor':'#fafafa','primaryBorderColor':'#e5e5e5','lineColor':'#a3a3a3','secondaryColor':'#0a0a0a','tertiaryColor':'#262626','clusterBkg':'transparent','clusterBorder':'#e5e5e5','noteBkgColor':'#0a0a0a','noteTextColor':'#fafafa','actorBkg':'#171717','actorTextColor':'#fafafa','actorBorder':'#e5e5e5','signalColor':'#a3a3a3','signalTextColor':'#a3a3a3','labelBoxBkgColor':'#171717','fontFamily':'inherit'}}}%%
 flowchart LR
     A["Owner pastes the link<br/>into an AI assistant"] --> B["Assistant asks about<br/>the business"]
     B --> C["Answers are saved<br/>in the project notes"]
@@ -114,7 +114,7 @@ flowchart LR
 ## 05 · Who uses it
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f0f0f0','primaryTextColor':'#050505','primaryBorderColor':'#262626','lineColor':'#525252','secondaryColor':'#ffffff','tertiaryColor':'#f7f7f8','clusterBkg':'transparent','clusterBorder':'#262626','noteBkgColor':'#ffffff','noteTextColor':'#050505','actorBkg':'#f0f0f0','actorTextColor':'#050505','actorBorder':'#262626','signalColor':'#525252','signalTextColor':'#525252','labelBoxBkgColor':'#f0f0f0','fontFamily':'inherit'}}}%%
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#171717','primaryTextColor':'#fafafa','primaryBorderColor':'#e5e5e5','lineColor':'#a3a3a3','secondaryColor':'#0a0a0a','tertiaryColor':'#262626','clusterBkg':'transparent','clusterBorder':'#e5e5e5','noteBkgColor':'#0a0a0a','noteTextColor':'#fafafa','actorBkg':'#171717','actorTextColor':'#fafafa','actorBorder':'#e5e5e5','signalColor':'#a3a3a3','signalTextColor':'#a3a3a3','labelBoxBkgColor':'#171717','fontFamily':'inherit'}}}%%
 flowchart TB
     O(["Owner"]) --> App["The CRM"]
     W(["Crew on their phones"]) --> App
@@ -137,7 +137,7 @@ flowchart TB
 ## 07 · What it's written in
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'pie1':'#262626','pie2':'#a3a3a3','pie3':'#64748b','pie4':'#94a3b8','pie5':'#475569','pie6':'#cbd5e1','pie7':'#334155','pieStrokeColor':'#0d1117','pieOuterStrokeColor':'#0d1117','pieTitleTextColor':'#8b949e','pieLegendTextColor':'#8b949e','pieSectionTextColor':'#0d1117'}}}%%
+%%{init: {'theme':'base','themeVariables':{'pie1':'#fafafa','pie2':'#a3a3a3','pie3':'#64748b','pie4':'#94a3b8','pie5':'#475569','pie6':'#cbd5e1','pie7':'#334155','pieStrokeColor':'#0d1117','pieOuterStrokeColor':'#0d1117','pieTitleTextColor':'#8b949e','pieLegendTextColor':'#8b949e','pieSectionTextColor':'#0d1117'}}}%%
 pie title Share of the code, by language
     "TypeScript" : 98.7
     "Other" : 1.3
