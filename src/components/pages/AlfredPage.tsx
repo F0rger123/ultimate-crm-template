@@ -49,6 +49,8 @@ import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
+import { AlfredErrorPopup } from "../ui/AlfredErrorPopup";
+import { classifyAlfredError, type AlfredError } from "../../lib/alfredErrors";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -212,7 +214,7 @@ const alfredDepositFields = (inputs: any, total: number): { depositRequired: num
   return pct ? { depositRequired: pct, depositType: "percent", depositMandatory: inputs.depositMandatory } : { depositRequired: amt, depositType: "amount", depositMandatory: inputs.depositMandatory };
 };
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], wins = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "", onResolveScreenHighlight }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; wins?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], wins = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], onNotify, isActivePage = true, currentPageName = "alfred", cursorContext = "", onResolveScreenHighlight }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; wins?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
   // FEATURE — "keep talking to it while looking through the CRM... Alfred
   // should have the context of the screen you're on." isActivePage drives
   // BOTH the poll-gating (see shouldPollAlfred usages below — this file's
@@ -221,6 +223,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // component mounted so Voice Mode can survive navigation, that same
   // egress-conscious behavior has to be an explicit check instead) AND
   // whether the normal chat UI portals into #alfred-mount-point at all.
+  onNotify?: (n: { text: string; detail?: string }) => void;
   isActivePage?: boolean;
   currentPageName?: string;
   cursorContext?: string;
@@ -5192,6 +5195,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // ever rendering it as a fake user bubble — the owner's actual short
   // caption (already appended separately by the caller) stays the only
   // thing shown as "sent by them."
+  // FEATURE (user report) — errors never go into the conversation: a pop-up
+  // (while the chat is open) plus a bell notification and a toast (so whoever
+  // sent it hears about it even if they've moved to another page).
+  const [alfredError, setAlfredError] = useState<AlfredError | null>(null);
+  const reportAlfredError = (err: unknown, opts: { retryText?: string; file?: boolean } = {}) => {
+    const e = classifyAlfredError(err, opts);
+    console.warn("[Alfred] error:", e.details);
+    setAlfredError(e);
+    toast(e.title, "red");
+    onNotify?.({ text: "Alfred: " + e.title, detail: e.message });
+  };
   const send = async (overrideText?: string, opts?: { skipVisibleMessage?: boolean }) => {
     const text = (overrideText ?? input).trim();
     if (!text) return;
@@ -5774,7 +5788,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       let displayText = finalText.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/\*/g, "");
       if (modelUsed !== (settings.activeModel || "claude") && !failoverNoticeShownRef.current.has(activeId)) {
         failoverNoticeShownRef.current.add(activeId);
-        displayText += "\n\n⚡ Failed over to " + (MODELS_MAP[modelUsed]?.name || modelUsed);
+        toast("Your first AI choice didn't answer — used " + (MODELS_MAP[modelUsed]?.name || modelUsed) + " instead", "yellow");
       }
       const alfredMsgId = uid();
       appendMessage({ id: alfredMsgId, role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
@@ -5856,7 +5870,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       // A one-time cleanup effect (below, on mount) removes the bad
       // `autoLearned: true` rows this block already created.
     } catch (err) {
-      appendMessage({ id: uid(), role: "alfred", content: "⚠️ " + (err.message || "Connection failed") + "\n\nSlash commands still work without a connection. Try /help.", timestamp: Date.now() });
+      reportAlfredError(err, { retryText: opts?.skipVisibleMessage ? undefined : text });
     } finally {
       setLoading(false);
     }
@@ -5874,7 +5888,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
   const sendWithAttachments = async (caption: string, attachments: typeof pendingAttachments) => {
     if (getVisionModelChain().length === 0) {
       appendMessage({ id: uid(), role: "user", content: caption || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`), imagePreviews: attachments.filter(a => !a.isPdf).map(a => a.dataUrl), timestamp: Date.now() } as any);
-      appendMessage({ id: uid(), role: "alfred", content: "Reading " + (attachments.length > 1 ? "screenshots" : attachments[0].isPdf ? "PDFs" : "photos/receipts") + " needs an API key for Claude, GPT-4o, Gemini, or OpenRouter — add one in Settings → AI Models.", timestamp: Date.now() });
+      reportAlfredError(new Error("Reading files needs an API key — add one in Settings → AI Models."));
       return;
     }
     const msgId = uid();
@@ -5959,7 +5973,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       if (attachAbort.signal.aborted) {
         appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
       } else {
-        appendMessage({ id: uid(), role: "alfred", content: "Couldn't read " + (attachments.length > 1 ? "those files" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
+        reportAlfredError(err, { file: true });
       }
     } finally {
       if (currentAbortControllerRef.current === attachAbort) currentAbortControllerRef.current = null;
@@ -6500,6 +6514,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
   // pass — createPortal needs the target to already exist.
   return (
     <>
+    <AlfredErrorPopup error={isActivePage === false ? null : alfredError} onClose={() => setAlfredError(null)} onRetry={t => { setModelStatus?.((st: any) => Object.fromEntries(Object.entries(st || {}).map(([k, v]: any) => [k, { ...v, lockedUntil: 0 }]))); setTimeout(() => sendMessageRef.current(t), 80); }} onOpenSettings={openSettings} />
     {mountEl && createPortal(
     <div className="relative w-full flex-1 min-h-0 flex bg-black border border-brand-900/30 rounded-2xl overflow-hidden">
       {/* Conversation sidebar — BUG FIX (user report) — "the animation isn't
