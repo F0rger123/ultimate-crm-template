@@ -1,4 +1,5 @@
 // auto-extracted from CRM Starter monolith
+import { fetchShiftDays, shiftHoursByDay, extraShiftHours, type ShiftDay } from "../../lib/shiftLog";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -686,43 +687,33 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   // counted mid-period. Only add the shortfall (shift total minus whatever
   // job hours already landed on that same date) so a shift that's already
   // fully reflected via completed jobs is never double-counted.
+  // Shift log (lib/shiftLog.ts): every employee's saved day totals for this
+  // business (the database only returns this business's rows), refreshed
+  // when the page opens and every few minutes.
+  const [shiftDays, setShiftDays] = useState<ShiftDay[]>([]);
+  useEffect(() => {
+    const load = () => fetchShiftDays({}, new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10)).then(setShiftDays);
+    load();
+    const t = setInterval(load, 5 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
   const shiftTopUpHours = (emp: any, startDate: string, endDate: string): number => {
-    // FIX 7 — an employee still clocked in (dayClockInAt set, "End My Day"
-    // not pressed yet) previously contributed NOTHING to Hours/Payroll until
-    // they actually ended their shift — lastShiftDate/lastShiftHours only
-    // get written at that point (see EmployeePortal.tsx's toggleDay). That
-    // made payroll look "stuck"/stale for anyone currently on the clock.
-    // Mirrors EmployeePortal.tsx's own live netShiftHoursNow formula exactly
-    // (dayClockInAt → now, minus paused/lunch minutes) so the two can't
-    // disagree once the shift actually ends and lastShiftHours is written.
-    let liveTopUp = 0;
-    // BLOCKER 13 (mobile round 9) — shiftDayStr() (4am cutover), matching
-    // how EmployeePortal.tsx's toggleDay now writes lastShiftDate, so a
-    // shift straddling local midnight is treated as the same shift day on
-    // both the employee and owner sides (otherwise this top-up and the
-    // employee's own Resume-Day check could disagree right around midnight).
+    // Every shift day in the period (shift log + the last shift on the
+    // employee row), each adding the time no completed job covers that day.
+    // A shift still running uses its live total (same formula as the
+    // employee's own app), so payroll isn't stuck while someone is on the clock.
     const todayStr = shiftDayStr();
-    if (emp?.dayClockInAt && todayStr >= startDate && todayStr <= endDate) {
-      const dayPausedMinutes = Number(emp.dayPausedMinutes) || 0;
-      const onLunch = !!emp.dayLunchStartAt;
-      const currentPauseMs = onLunch ? Date.now() - emp.dayLunchStartAt : 0;
-      const liveShiftHours = Math.max(0, (Date.now() - emp.dayClockInAt - dayPausedMinutes * 60000 - currentPauseMs) / 3600000);
-      const jobHoursToday = jobs
-        .filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && j.scheduledDate === todayStr)
-        .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
-      liveTopUp = Math.max(0, liveShiftHours - jobHoursToday);
-    }
-    const shiftDate = emp?.lastShiftDate;
-    if (!shiftDate || shiftDate < startDate || shiftDate > endDate) return liveTopUp;
-    const jobHoursOnShiftDate = jobs
-      .filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && j.scheduledDate === shiftDate)
+    const jobHoursOn = (date: string) => jobs
+      .filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && j.scheduledDate === date)
       .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
-    const shiftTotal = Number(emp.lastShiftHours) || 0;
-    const endedShiftTopUp = Math.max(0, shiftTotal - jobHoursOnShiftDate);
-    // If the employee is currently clocked in for today AND has a
-    // lastShiftDate that's also today (started, ended, then started again the
-    // same day), don't double-count — the live figure already supersedes it.
-    return shiftDate === todayStr && emp?.dayClockInAt ? liveTopUp : liveTopUp + endedShiftTopUp;
+    let live: { date: string; hours: number } | undefined;
+    if (emp?.dayClockInAt) {
+      const dayPausedMinutes = Number(emp.dayPausedMinutes) || 0;
+      const currentPauseMs = emp.dayLunchStartAt ? Date.now() - emp.dayLunchStartAt : 0;
+      live = { date: todayStr, hours: Math.max(0, (Date.now() - emp.dayClockInAt - dayPausedMinutes * 60000 - currentPauseMs) / 3600000) };
+    }
+    const byDay = shiftHoursByDay(shiftDays, String(emp.id), { date: emp?.lastShiftDate, hours: Number(emp?.lastShiftHours) || 0 });
+    return extraShiftHours(byDay, jobHoursOn, startDate, endDate, live);
   };
 
   // Calculate real hours from jobs (loggedHours on jobs they're crewed on),

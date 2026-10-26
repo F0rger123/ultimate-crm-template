@@ -1,4 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from "react";
+import { saveShiftDay, fetchShiftDays, shiftHoursByDay, extraShiftHours, isNetworkError, type ShiftDay } from "../../lib/shiftLog";
+import { queueClockChange, mergedPendingPatch, replayClockChanges, pendingClockChanges } from "../../lib/offlineClock";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign, BookOpen,
@@ -3832,6 +3834,41 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // queueOfflineJobPatch calls) so the employee can see there's real
   // unsynced work waiting, not just a vague "offline" label.
   const isOnline = useOnlineStatus();
+  // Shift log (lib/shiftLog.ts) — this employee's saved day totals, so hours
+  // and pay count every shift, not only the latest one.
+  const [myShiftDays, setMyShiftDays] = useState<ShiftDay[]>([]);
+  useEffect(() => {
+    const id = (myEmployee as any)?.id;
+    if (!id) return;
+    fetchShiftDays({ employeeId: id }, new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10)).then(setMyShiftDays);
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Clock changes made with no signal (lib/offlineClock.ts): show them after
+  // a reload, and send them when the phone is back online (and every minute
+  // while any are waiting, since "online" can still mean no real signal).
+  useEffect(() => {
+    const id = (myEmployee as any)?.id;
+    if (!id) return;
+    const m = mergedPendingPatch(id);
+    if ("dayClockInAt" in m) setOptimisticDayClockInAt(m.dayClockInAt);
+    if ("dayLunchStartAt" in m) setOptimisticDayLunchStartAt(m.dayLunchStartAt);
+    if ("lastShiftHours" in m) { setOptimisticLastShiftHours(m.lastShiftHours); setOptimisticLastShiftDate(m.lastShiftDate); }
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const id = (myEmployee as any)?.id;
+    if (!id || !isOnline) return;
+    const flush = () => {
+      if (!pendingClockChanges(id).length) return;
+      replayClockChanges(id).then(r => {
+        if (!r.sent) return;
+        refetchEmployees?.();
+        fetchShiftDays({ employeeId: id }, new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10)).then(setMyShiftDays);
+        toast(`Synced ${r.sent} clock change${r.sent !== 1 ? "s" : ""} made while offline ✓`, "green");
+      });
+    };
+    flush();
+    const t = setInterval(flush, 60000);
+    return () => clearInterval(t);
+  }, [isOnline, (myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [pendingSyncCount, setPendingSyncCount] = useState(() => getPendingJobPatches().length);
   const [syncingOffline, setSyncingOffline] = useState(false);
   useEffect(() => {
@@ -4147,12 +4184,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       : (localLastShift?.date === shiftDayStr() ? Number(localLastShift?.hours) || 0 : 0);
     const nextVal = Date.now() - Math.round(alreadyWorkedTodayHours * 3600000);
     setOptimisticDayClockInAt(nextVal);
+    const startPatch = { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
+    if (typeof navigator !== "undefined" && navigator.onLine === false) { queueClockChange(empId, startPatch); toast("Shift started — no signal, it'll sync when you're back online"); return; }
     try {
       const result = await (supabase as any)
         .from("employees")
-        .update({ dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 })
+        .update(startPatch)
         .eq("id", empId)
         .select("id");
+      if (result?.error && isNetworkError(result.error)) { queueClockChange(empId, startPatch); toast("Shift started — no signal, it'll sync when you're back online"); return; }
       if (result?.error) {
         console.warn("Auto-start shift failed:", result.error.message);
         setOptimisticDayClockInAt(undefined);
@@ -4164,6 +4204,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         toast(alreadyWorkedTodayHours > 0 ? "Shift resumed ✓" : "Shift started automatically ✓");
       }
     } catch (e: any) {
+      if (isNetworkError(e)) { queueClockChange(empId, startPatch); toast("Shift started — no signal, it'll sync when you're back online"); return; }
       console.warn("Auto-start shift failed:", e?.message);
       setOptimisticDayClockInAt(undefined);
     }
@@ -4787,43 +4828,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // rather than completed jobs. Shared as one function so both call sites
   // (and any future one) can't independently diverge again.
   const computeEmployeeShiftTopUp = (startDate: string, endDate: string): number => {
-    // BUG FIX — this used to re-read myEmployee.lastShiftDate/lastShiftHours/
-    // dayClockInAt straight off the prop, shadowing the optimistic-aware
-    // empDayClockInAt/effLastShiftHours/effLastShiftDate defined above. Right
-    // after "End My Day," the optimistic values are set immediately but the
-    // prop only catches up once refetchEmployees() resolves — using the raw
-    // prop here meant the Pay tab could show stale (pre-clock-out) hours for
-    // however long that round trip took, reading exactly like "hours don't
-    // show up." Use the effective (optimistic-first) values instead.
-    const empLastShiftDate = effLastShiftDate;
-    const empLastShiftHours = effLastShiftHours;
-    const jobHoursOnShiftDate = empLastShiftDate
-      ? myJobs.filter(j => j.status === "completed" && j.scheduledDate === empLastShiftDate).reduce((s, j) => s + Number(j.loggedHours || 0), 0)
-      : 0;
-    // Only the SINGLE most recent shift is ever stored server-side (no daily
-    // history), so this can only top up that one day, and only the
-    // shortfall beyond whatever job hours already landed on that same date
-    // (never double-counted).
-    const endedShiftTopUp = (empLastShiftDate && empLastShiftDate >= startDate && empLastShiftDate <= endDate)
-      ? Math.max(0, empLastShiftHours - jobHoursOnShiftDate)
-      : 0;
-    // Still clocked in (dayClockInAt set, hasn't pressed "End My Day" yet) —
-    // mirrors the live netShiftHoursNow formula used by the shift-timer
-    // button below, so the two can't disagree once the shift actually ends.
-    const liveShiftTopUp = (empDayClockInAt && todayStr >= startDate && todayStr <= endDate)
-      ? (() => {
-          const pausedMin = Number((myEmployee as any)?.dayPausedMinutes) || 0;
-          const lunchStart = (myEmployee as any)?.dayLunchStartAt;
-          const currentPauseMs = lunchStart ? Date.now() - lunchStart : 0;
-          const liveHours = Math.max(0, (Date.now() - empDayClockInAt - pausedMin * 60000 - currentPauseMs) / 3600000);
-          const jobHoursToday = myJobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s, j) => s + Number(j.loggedHours || 0), 0);
-          return Math.max(0, liveHours - jobHoursToday);
-        })()
-      : 0;
-    // Avoid double-counting if lastShiftDate also happens to be today
-    // (clocked in again after already ending a shift earlier the same day)
-    // — the live figure supersedes the ended-shift one for today specifically.
-    return (empLastShiftDate === todayStr && empDayClockInAt) ? liveShiftTopUp : liveShiftTopUp + endedShiftTopUp;
+    // Every shift day in the range (shift log + the last shift on the
+    // employee row, optimistic-first), each adding the time no completed job
+    // covers that day; a shift still running uses its live total.
+    const empIdForLog = String((myEmployee as any)?.id || "");
+    const byDay = shiftHoursByDay(myShiftDays, empIdForLog, { date: effLastShiftDate, hours: effLastShiftHours });
+    const jobHoursOn = (date: string) => myJobs.filter(j => j.status === "completed" && j.scheduledDate === date).reduce((s, j) => s + Number(j.loggedHours || 0), 0);
+    let live: { date: string; hours: number } | undefined;
+    if (empDayClockInAt) {
+      const pausedMin = Number((myEmployee as any)?.dayPausedMinutes) || 0;
+      const lunchStart = (myEmployee as any)?.dayLunchStartAt;
+      const currentPauseMs = lunchStart ? Date.now() - lunchStart : 0;
+      live = { date: todayStr, hours: Math.max(0, (Date.now() - empDayClockInAt - pausedMin * 60000 - currentPauseMs) / 3600000) };
+    }
+    return extraShiftHours(byDay, jobHoursOn, startDate, endDate, live);
   };
 
   const weekShiftTopUpHours = computeEmployeeShiftTopUp(weekStart, weekEnd);
@@ -7393,6 +7411,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   // refetchEmployees() to resolve (see computeEmployeeShiftTopUp).
                   setOptimisticLastShiftHours(finalHours);
                   setOptimisticLastShiftDate(shiftDayStr());
+                  setMyShiftDays(prev => [...prev.filter(d => !(d.employee_id === empId && d.date === shiftDayStr())), { employee_id: empId, date: shiftDayStr(), hours: finalHours }]);
                   sendEndOfDaySummary(finalHours);
                   // Persist for the rest of the day (no auto-hide) — FIX 11.
                   setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
@@ -7447,6 +7466,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // back the real (unchanged) row. .select("id") forces
                 // PostgREST to return the actually-affected rows so an
                 // empty array can be told apart from a real success.
+                const shiftDayInfo = endingDay ? { ownerId: String((myEmployee as any)?.owner_id || ""), date: shiftDayStr(), hours: finalHours, clockOutAt: Date.now() } : undefined;
+                const keepOffline = () => {
+                  queueClockChange(empId, patch, shiftDayInfo);
+                  toast("No signal — saved on this phone. It'll sync when you're back online.", "yellow");
+                };
+                if (typeof navigator !== "undefined" && navigator.onLine === false) { keepOffline(); return; }
                 try {
                   let result = await (supabase as any).from("employees").update(patch).eq("id", empId).select("id");
                   if (result?.error) {
@@ -7467,9 +7492,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     console.warn("[HoursSync] core patch also failed:", result.error.message, "— retrying dayClockInAt only. Run supabase/migrations/0001 and 0002 in the Supabase SQL editor.");
                     result = await (supabase as any).from("employees").update({ dayClockInAt: nextVal }).eq("id", empId).select("id");
                   }
-                  if (result?.error) {
+                  if (result?.error && isNetworkError(result.error)) {
+                    keepOffline();
+                  } else if (result?.error) {
                     console.error("[HoursSync] — error:", result.error.message);
-                    toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
+                    toast("Couldn't save to the server: " + result.error.message, "red");
                     setOptimisticDayClockInAt(undefined);
                   } else if (!result?.data || result.data.length === 0) {
                     console.error("[HoursSync] — update matched 0 rows (blocked by permissions?) for employee", empId);
@@ -7478,10 +7505,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   } else {
                     refetchEmployees?.();
                     toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — owner can see you're on shift");
+                    if (shiftDayInfo) saveShiftDay({ ...shiftDayInfo, employeeId: empId }).then(r => { if (!r.ok && r.network) queueClockChange(empId, {}, shiftDayInfo); });
                   }
                 } catch (e: any) {
+                  if (isNetworkError(e)) { keepOffline(); return; }
                   console.error("[HoursSync] — error:", e?.message || e);
-                  toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
+                  toast("Couldn't save to the server: " + (e?.message || "unknown error"), "red");
                   setOptimisticDayClockInAt(undefined);
                 }
               };
@@ -7498,8 +7527,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 const patch: any = turningOn
                   ? { dayLunchStartAt: Date.now() }
                   : { dayLunchStartAt: null, dayPausedMinutes: dayPausedMinutes + currentPauseMs / 60000 };
+                const keepPauseOffline = () => { queueClockChange(empId, patch); toast("No signal — saved on this phone. It'll sync when you're back online.", "yellow"); };
+                if (typeof navigator !== "undefined" && navigator.onLine === false) { keepPauseOffline(); return; }
                 try {
                   const result = await (supabase as any).from("employees").update(patch).eq("id", empId).select("id");
+                  if (result?.error && isNetworkError(result.error)) { keepPauseOffline(); return; }
                   if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
                   if (!result?.data || result.data.length === 0) { toast("Failed to save — the server rejected the change", "red"); return; }
                   refetchEmployees?.();
@@ -7509,7 +7541,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     toast("Timer resumed ▶");
                   }
                 } catch (e: any) {
-                  toast("Saved locally, but couldn't sync to the server: " + (e?.message || ""), "red");
+                  if (isNetworkError(e)) { keepPauseOffline(); return; }
+                  toast("Couldn't save to the server: " + (e?.message || ""), "red");
                 }
               };
               const maxLunchMins = Number((settings as any)?.maxLunchMinutes ?? 30);
