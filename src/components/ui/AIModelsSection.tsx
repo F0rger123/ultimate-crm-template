@@ -28,6 +28,7 @@ import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, se
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
+import { AlfredHealthPanel } from "./AlfredHealthPanel";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "./Glass";
 import { GBtn } from "./GBtn";
@@ -173,6 +174,8 @@ export function AIModelsSection({ f, setF, setSettings, modelStatus, setModelSta
         <h4 className="font-semibold text-sm">AI Models & Failover</h4>
         <div className="text-[11px] text-white/50 mt-1">Alfred can use multiple AI providers. Add API keys to enable each, and turn on failover to auto-switch when one hits its rate limit.</div>
       </div>
+
+      <AlfredHealthPanel toast={toast} />
 
       {/* Master failover toggle */}
       <Glass className="p-4 !bg-gradient-to-br !from-purple-950/20 !to-black/60 !border-purple-700/40">

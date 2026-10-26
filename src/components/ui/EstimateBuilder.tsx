@@ -33,6 +33,7 @@ import { Glass } from "./Glass";
 import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
 import { GDate } from "./GDate";
+import { CustomerPicker } from "./CustomerPicker";
 import { GSel } from "./GSel";
 import { GTxt } from "./GTxt";
 import { Modal } from "./Modal";
@@ -80,8 +81,23 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   ]);
   const taxRate = Number((settings as any)?.taxRate || 0);
 
+  // BUG FIX — "stays stuck on a client, super broken." This reset ran on
+  // every change to `customers`, and the app refreshes that list every few
+  // seconds — so while you built a quote it kept snapping the customer back
+  // (to the first customer, or to the one it was opened for) and wiping the
+  // line items. Now it resets only when the builder opens, or when it's
+  // re-opened for a different customer / draft.
+  const [saveError, setSaveError] = useState("");
+  const openedRef = useRef(false);
+  const openKeyRef = useRef("");
   useEffect(() => {
-    if (open) {
+    if (!open) { openedRef.current = false; return; }
+    const key = `${initialCustomerId || ""}|${initialDraft ? JSON.stringify(initialDraft).length + ":" + (initialDraft.customerId || "") : ""}`;
+    if (openedRef.current && openKeyRef.current === key) return;
+    openedRef.current = true;
+    openKeyRef.current = key;
+    setSaveError("");
+    {
       // Lead Intake's "Convert to Estimate" (LeadIntakePage.tsx) opens this
       // builder pre-targeted at a specific customer via initialCustomerId,
       // same one-shot pattern as the FAB's autoOpenNew — falls back to the
@@ -94,7 +110,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       // from-scratch redo. Fresh ids on every line item — this always
       // creates a NEW estimate row, never mutates the declined one.
       const draftCustomerId = initialDraft?.customerId || initialCustomerId;
-      setCid((draftCustomerId && customers.some((c: any) => c.id === draftCustomerId)) ? draftCustomerId : (customers[0]?.id || ""));
+      // No silent default to the first customer — pick on purpose.
+      setCid(draftCustomerId || "");
       setItems(initialDraft?.lineItems?.length
         ? initialDraft.lineItems.map((li: any) => ({ id: uid(), description: li.description, quantity: li.quantity, unitPrice: li.unitPrice }))
         : [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
@@ -120,7 +137,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
       ]);
     }
-  }, [open, customers, initialCustomerId, initialDraft]);
+  }, [open, initialCustomerId, initialDraft]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sub = items.reduce((s, i) => s + Number(i.quantity) * Number(i.unitPrice), 0);
   // FEATURE 7 — combined total of every stacked discount + the legacy flat field.
@@ -216,8 +233,12 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   };
 
   const submit = () => {
-    if (!cid) return;
-    if (estimateType !== "package" && items.some((i: any) => !i.description)) return;
+    // Say what's missing instead of doing nothing.
+    if (!cid || !customers.some((c: any) => c.id === cid)) { setSaveError("Choose a customer first."); return; }
+    if (estimateType !== "package" && items.some((i: any) => !String(i.description || "").trim())) { setSaveError("Every line needs a description (or remove the empty line)."); return; }
+    if (estimateType !== "package" && !items.length) { setSaveError("Add at least one line item."); return; }
+    if (estimateType === "package" && !packages.some(p => p.lineItems.some((li: any) => String(li.description || "").trim()))) { setSaveError("Give at least one package a line item."); return; }
+    setSaveError("");
     const pkgData = estimateType === "package" ? packages.map(p => ({
       ...p,
       subtotal: p.lineItems.reduce((s: number, i: any) => s + Number(i.quantity) * Number(i.unitPrice), 0),
@@ -233,7 +254,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     <Modal open={open} onClose={onClose} title="Build Estimate" maxW="max-w-3xl">
       <div className="space-y-4">
         <div className="grid md:grid-cols-2 gap-3">
-          <div><label className="text-xs text-white/60 mb-1 block">Customer</label><GSel value={cid} onChange={e => setCid(e.target.value)}>{customers.map(c => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}</GSel></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Customer</label><CustomerPicker customers={customers} value={cid} onChange={id => { setCid(id); setSelectedAddressId("primary"); setSaveError(""); }} /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Valid until</label><GDate value={vu} onChange={e => setVu(e.target.value)} /></div>
         </div>
 
@@ -545,7 +566,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
           </div>
         </Glass>
 
-        <div className="flex gap-2 justify-end"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={submit}>Create</GBtn></div>
+        {saveError && <div className="text-xs text-danger-300 text-right" role="alert">{saveError}</div>}
+        <div className="flex gap-2 justify-end"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={submit} data-builder-save>Create</GBtn></div>
       </div>
     </Modal>
   );

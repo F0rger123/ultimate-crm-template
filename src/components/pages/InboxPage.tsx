@@ -48,6 +48,7 @@ import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
+import { saveCustomersTolerant } from "../../lib/customerImport";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
 import { EstimateBuilder } from "../ui/EstimateBuilder";
 import { EstimatePreview } from "../ui/EstimatePreview";
@@ -78,7 +79,7 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, setJobs, settings = {} as AppSettings, toast, ownerId = "", onNav, onViewCustomerInCrm }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; setJobs?: any; settings?: AppSettings; toast?: any; ownerId?: string; onNav?: (page: string) => void; onViewCustomerInCrm?: (customerId: string) => void }) {
+export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, setJobs, settings = {} as AppSettings, toast, ownerId = "", onNav, onViewCustomerInCrm, jobs = [], estimates = [], employees = [] }: { jobs?: any[]; estimates?: any[]; employees?: any[]; threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; setJobs?: any; settings?: AppSettings; toast?: any; ownerId?: string; onNav?: (page: string) => void; onViewCustomerInCrm?: (customerId: string) => void }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -868,9 +869,13 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     if (!name || name === displayName(t)) return;
     if (t.channel === "sms") {
       setThreads((prev: any[]) => prev.map(x => x.id === t.id ? { ...x, contactName: name } : x));
+      // Also keep it as this device's nickname, so a refresh that brings
+      // back the old name (server didn't take the change) can't undo it here.
+      setNicknameOverrides((prev: Record<string, string>) => ({ ...prev, [t.id]: name }));
       try {
-        const r: any = await (supabase as any).from("inbox_threads").update({ contact_name: name }).eq("id", t.id);
-        if (r?.error) toast("Renamed locally, but failed to sync — " + r.error.message, "error");
+        const r: any = await (supabase as any).from("inbox_threads").update({ contact_name: name }).eq("id", t.id).select("id");
+        if (r?.error) toast("Renamed locally, but failed to sync — " + r.error.message, "red");
+        else if (!r?.data?.length) toast("Renamed on this device, but the server didn't save it", "red");
       } catch (e: any) {
         toast("Renamed locally, but failed to sync — " + (e?.message || "unknown error"), "error");
       }
@@ -891,8 +896,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     setMenuOpenId(null);
     if (t.channel === "sms") {
       try {
-        const r: any = await (supabase as any).from("inbox_threads").delete().eq("id", t.id);
+        const r: any = await (supabase as any).from("inbox_threads").delete().eq("id", t.id).select("id");
         if (r?.error) { toast("Delete failed: " + r.error.message, "error"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) { toast("Delete failed: the server didn't remove this conversation", "error"); return; }
       } catch (e: any) {
         toast("Delete failed: " + (e?.message || "unknown error"), "error");
         return;
@@ -1054,6 +1060,24 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   // the incoming-SMS poll set customerId when a phone match is found;
   // gmail threads never do (no customer FK on a raw email), so also try a
   // live email match as a fallback.
+  // FEATURE — tap the photo or name in a conversation to open that
+  // customer's file right here (pop-up), with a working Edit.
+  const [profileCustomerId, setProfileCustomerId] = useState<string | null>(null);
+  const [editingCustomer, setEditingCustomer] = useState<any>(null);
+  const profileCustomer = profileCustomerId ? customers.find((c: any) => c.id === profileCustomerId) || null : null;
+  const openProfile = (t: any) => {
+    const c = findCustomer(t);
+    if (c) setProfileCustomerId(c.id);
+    else toast("This number isn't a customer yet — use Convert to Lead to add them", "yellow");
+  };
+  const saveEditedCustomer = (d: any) => {
+    const record = { ...(customers.find((c: any) => c.id === d.id) || {}), ...d };
+    setCustomers((prev: any[]) => prev.map((c: any) => c.id === record.id ? record : c));
+    setEditingCustomer(null);
+    saveCustomersTolerant([record])
+      .then(r => { if (r.failed) toast("Saved here, but failed to sync — " + r.error, "red"); else toast("Customer saved ✓", "green"); })
+      .catch((e: any) => toast("Saved here, but failed to sync — " + (e?.message || "unknown error"), "red"));
+  };
   const findCustomer = (t: any) => {
     if (t.customerId) return customers.find(c => c.id === t.customerId);
     if (t.contactEmail) return customers.find(c => c.email && c.email.toLowerCase() === t.contactEmail.toLowerCase());
@@ -1265,7 +1289,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
               onTouchMove={e => e.stopPropagation()}
               className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/60"
             ><ChevronLeft size={16} /></button>
-            <div className="w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center text-xs font-bold flex-shrink-0 text-brand-fg">{displayName(activeThread)[0]}</div>
+            <button onClick={() => openProfile(activeThread)} title="Open customer file" className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-700 to-brand-950 flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden hover:ring-2 hover:ring-brand-500/60 transition">
+              {findCustomer(activeThread)?.photoUrl ? <img src={findCustomer(activeThread).photoUrl} alt="" className="w-full h-full object-cover" /> : (displayName(activeThread) || "?")[0]}
+            </button>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm flex items-center gap-1.5 flex-wrap">
                 {/* ISSUE 3 (round 6) — rename from the open-conversation header too */}
@@ -1280,8 +1306,8 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                   />
                 ) : (
                   <>
-                    {displayName(activeThread)}
-                    <button onClick={() => startRename(activeThread)} title="Rename" className="text-white/30 hover:text-white/70 transition"><Edit size={11} /></button>
+                    <button onClick={() => openProfile(activeThread)} title="Open customer file" className="hover:underline text-left">{displayName(activeThread)}</button>
+                    <button onClick={() => startRename(activeThread)} title="Rename this conversation" className="text-white/30 hover:text-white/70 transition"><Edit size={11} /></button>
                   </>
                 )}
                 {/* ISSUE 5 — customer labels in the conversation header too */}
@@ -1302,7 +1328,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 // BUG FIX (user report) — "pressing View CRM doesn't do
                 // anything." Had no onClick at all — not mobile-specific,
                 // just never wired up.
-                <GBtn variant="ghost" onClick={() => onViewCustomerInCrm?.(findCustomer(activeThread)!.id)} className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>
+                <GBtn variant="ghost" onClick={() => openProfile(activeThread)} className="!text-xs !py-1"><Users size={11} className="inline mr-1" />Customer file</GBtn>
               ) : (
                 <GBtn variant="ghost" onClick={() => convertToLead(activeThread)} className="!text-xs !py-1"><UserCheck size={11} className="inline mr-1" />Convert to Lead</GBtn>
               )}
@@ -1411,6 +1437,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           </div>
         </div>
       </Modal>
+      <CustomerDetail customer={profileCustomer} onClose={() => setProfileCustomerId(null)} onDelete={undefined} onEdit={(c: any) => { setProfileCustomerId(null); setEditingCustomer(c); }}
+        estimates={estimates} jobs={jobs} employees={employees} settings={settings} toast={toast} setCustomers={setCustomers}
+        onOpenEstimate={() => { const id = profileCustomerId; setProfileCustomerId(null); if (id) onViewCustomerInCrm?.(id); }} />
+      <CustomerModal open={!!editingCustomer} onClose={() => setEditingCustomer(null)} data={editingCustomer} onSave={saveEditedCustomer} mapsKey={(settings as any).googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
     </div>
   );
 }

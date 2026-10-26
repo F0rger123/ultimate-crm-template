@@ -1,4 +1,6 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY, SQUARE_ENVIRONMENT } from "./_lib/env";
+import { notifyOwnerInvoiceEvent } from "./_lib/ownerNotify";
+import { redeemPromoForInvoice } from "./_lib/promoRedeem";
 import { computeAmountDue, paidPatch } from "./_lib/amountDue";
 // FEATURE — Square as an alternative payment provider to Stripe (owner
 // request: "Is there a way we can give another option for users to connect
@@ -228,7 +230,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           idempotency_key: due ? `${invoiceId}-${due.payType[0]}${amountCents}`.slice(0, 45) : crypto.randomUUID(),
           amount_money: { amount: amountCents, currency: "USD" },
           location_id: acct.locationId,
-          note: ((body.description || "").slice(0, 440) + (due ? ` [${due.payType}:${due.baseCents}]` : "")).trim(),
+          // {promo:ID} before the [payType:cents] tag, which must stay last.
+          note: ((body.description || "").slice(0, 400) + (due?.promoId ? ` {promo:${due.promoId}}` : "") + (due ? ` [${due.payType}:${due.baseCents}]` : "")).trim(),
           ...(invoiceId ? { reference_id: invoiceId } : {}),
         }),
       });
@@ -462,6 +465,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {
         return json({ error: "Payment succeeded with Square, but the invoice record couldn't be updated (0 rows matched) — contact the business directly to confirm your invoice shows paid." }, 500);
       }
+      if (!alreadyLogged) await notifyOwnerInvoiceEvent(context.env, new URL(context.request.url).origin, invoiceId, "paid", Math.min(paidAmountCents, expectedAmountCents) / 100).catch(() => {});
+      const promoTag = String(payData?.payment?.note || "").match(/\{promo:([A-Za-z0-9-]+)\}/);
+      if (promoTag) await redeemPromoForInvoice(serviceRoleKey, promoTag[1], invoiceId);
       return json({ success: true });
     }
 

@@ -38,7 +38,7 @@ const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: 
   cerebras: { provider: "openai-compat", modelId: "gpt-oss-120b", endpoint: "https://api.cerebras.ai/v1/chat/completions", maxTokens: 350 },
   nvidia_nemotron: { provider: "openai-compat", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", maxTokens: 350 },
   nvidia_muse: { provider: "openai-compat", modelId: "meta/muse-glimmer-30b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", maxTokens: 350 },
-  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k3", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", maxTokens: 350 },
+  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k2.6", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", maxTokens: 350 },
   nvidia_qwen: { provider: "openai-compat", modelId: "nvidia/nemotron-3-super-120b-a12b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", maxTokens: 350 },
 };
 const DEFAULT_PRIORITY = ["claude", "openai", "gemini", "groq", "mistral"];

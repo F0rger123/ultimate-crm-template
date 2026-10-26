@@ -1,4 +1,6 @@
 import { SUPABASE_URL } from "./_lib/env";
+import { notifyOwnerInvoiceEvent } from "./_lib/ownerNotify";
+import { redeemPromoForInvoice } from "./_lib/promoRedeem";
 // FIX 1 (mobile round 8) — server-side, signature-verified source of truth
 // for "was this invoice actually paid." Previously the ONLY place an invoice
 // got marked paid was client-side code trusting its own read of the Stripe
@@ -80,7 +82,10 @@ const logPaymentEvent = async (
   invoiceId: string,
   entry: { type: "paid" | "failed" | "refunded" | "disputed"; amount?: number; stripePaymentIntentId?: string; note?: string },
   statusPatch: Record<string, unknown>,
-  serviceRoleKey: string
+  serviceRoleKey: string,
+  // Called once when this event is recorded for the first time (never on a
+  // redelivery) — tells the owner right away (see _lib/ownerNotify.ts).
+  onNew?: (invoiceId: string, entry: { type: "paid" | "failed" | "refunded" | "disputed"; amount?: number }) => Promise<void>
 ): Promise<boolean> => {
   if (!serviceRoleKey) {
     console.error("[StripeWebhook] SUPABASE_SERVICE_ROLE_KEY not configured — cannot write invoice status under owner-scoped RLS. Add it in the Cloudflare Pages dashboard.");
@@ -131,10 +136,11 @@ const logPaymentEvent = async (
     console.error("[StripeWebhook] update matched 0 rows for invoice", invoiceId, "— invoice not found or owner_id mismatch");
     return false;
   }
+  if (onNew) await onNew(invoiceId, entry).catch(() => {});
   return true;
 };
 
-const markInvoicePaid = async (invoiceId: string, paymentIntentId: string, serviceRoleKey: string, amount?: number, payType?: string, tipCents?: number): Promise<boolean> => {
+const markInvoicePaid = async (invoiceId: string, paymentIntentId: string, serviceRoleKey: string, amount?: number, payType?: string, tipCents?: number, onNew?: (invoiceId: string, entry: any) => Promise<void>): Promise<boolean> => {
   const paidAt = new Date().toISOString().slice(0, 10);
   // Deposit vs balance: create_payment_intent stamps metadata.payType. A
   // balance payment must also set paidFull, or the invoice keeps showing
@@ -151,7 +157,8 @@ const markInvoicePaid = async (invoiceId: string, paymentIntentId: string, servi
     invoiceId,
     { type: "paid", amount, stripePaymentIntentId: paymentIntentId, note: "Paid via Stripe" },
     { paidAt, ...amounts, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId },
-    serviceRoleKey
+    serviceRoleKey,
+    onNew
   );
 };
 
@@ -294,17 +301,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
   try {
     let ok = true;
 
+    const notify = (id: string, e: { type: "paid" | "failed" | "refunded" | "disputed"; amount?: number }) => notifyOwnerInvoiceEvent(context.env, url.origin, id, e.type, e.amount);
     if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
       const session = event.data?.object || {};
       const invoiceId = session.metadata?.invoiceId || session.client_reference_id;
       const paymentIntentId = session.payment_intent || session.id;
       if (invoiceId && session.payment_status === "paid") {
-        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", serviceRoleKey, (session.amount_total || 0) / 100, session.metadata?.payType, 0);
+        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", serviceRoleKey, (session.amount_total || 0) / 100, session.metadata?.payType, 0, notify);
       }
     } else if (event.type === "payment_intent.succeeded") {
       const intent = event.data?.object || {};
       const invoiceId = intent.metadata?.invoiceId;
-      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, serviceRoleKey, (intent.amount || 0) / 100, intent.metadata?.payType, Number(intent.metadata?.tipCents) || 0);
+      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, serviceRoleKey, (intent.amount || 0) / 100, intent.metadata?.payType, Number(intent.metadata?.tipCents) || 0, notify);
+      // A coupon on this payment is used up now (once per invoice).
+      if (invoiceId && intent.metadata?.promoId) await redeemPromoForInvoice(serviceRoleKey, intent.metadata.promoId, invoiceId);
     } else if (event.type === "payment_intent.payment_failed") {
       // AUDIT (round 12) — previously unhandled entirely: a declined card
       // meant Stripe knew, but this app never did — no log, no owner
@@ -320,7 +330,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           invoiceId,
           { type: "failed", amount: (intent.amount || 0) / 100, stripePaymentIntentId: intent.id, note: reason },
           { paymentFailedAt: new Date().toISOString() },
-          serviceRoleKey
+          serviceRoleKey,
+          notify
         );
       }
     } else if (event.type === "invoice.paid") {
@@ -361,7 +372,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           invoiceId,
           { type: "refunded", amount: (charge.amount_refunded || 0) / 100, stripePaymentIntentId: paymentIntentId, note: "Refunded via Stripe" },
           { refundedAt: new Date().toISOString().slice(0, 10), stripePaymentStatus: "refunded", paidAt: null },
-          serviceRoleKey
+          serviceRoleKey,
+          notify
         );
       }
     } else if (event.type === "charge.dispute.created") {
@@ -396,7 +408,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           invoiceId,
           { type: "disputed", amount: (dispute.amount || 0) / 100, stripePaymentIntentId: paymentIntentId, note: dispute.reason || "Dispute opened" },
           { disputedAt: new Date().toISOString() },
-          serviceRoleKey
+          serviceRoleKey,
+          notify
         );
       } else {
         // Still couldn't resolve an invoice — this is now the rare case

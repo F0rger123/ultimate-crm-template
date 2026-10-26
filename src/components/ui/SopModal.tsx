@@ -118,8 +118,8 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
     if (!window.confirm("Delete this SOP document?")) return;
     setDocs(prev => prev.filter(d => d.id !== id));
     if (activeId === id) setActiveId(null);
-    const res = await (supabase as any).from("sop_documents").delete().eq("id", id);
-    if (res?.error) { console.error("[SOP] delete failed:", res.error.message); toast?.("Deleted locally, but failed to delete from server — " + res.error.message, "red"); }
+    const res = await (supabase as any).from("sop_documents").delete().eq("id", id).select("id");
+    if (res?.error || !Array.isArray(res?.data) || res.data.length === 0) { console.error("[SOP] delete failed:", res?.error?.message || "0 rows"); toast?.("Deleted locally, but failed to delete from server — " + (res?.error?.message || "it may come back"), "red"); }
     else toast?.("SOP deleted", "green");
   };
 

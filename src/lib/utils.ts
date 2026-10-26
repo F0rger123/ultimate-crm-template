@@ -1446,7 +1446,7 @@ export function consumeOAuthIntent(): "employee" | null {
 // like the app randomly jumping to the Google connection screen. Each
 // "Connect Google" button records the page it was pressed on; after the
 // OAuth round trip the app returns there (the dashboard for a plain sign-in).
-const OAUTH_RETURN_KEY = "smocks.oauthReturnPage";
+const OAUTH_RETURN_KEY = "crm.oauthReturnPage";
 export function rememberOAuthReturnPage(page?: string): void {
   const p = page || (window.location.hash.replace(/^#\/?/, "").split(/[?&]/)[0]) || "dashboard";
   try { sessionStorage.setItem(OAUTH_RETURN_KEY, p); } catch { /* ignore */ }

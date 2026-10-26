@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight, FileText, Briefcase, CalendarClock, Eye, EyeOff, Search, Plus, Building2 } from "lucide-react";
+import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight, FileText, Briefcase, CalendarClock, Eye, EyeOff, Search, Plus, Building2, Tag } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { fmt, uid, today, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
@@ -57,7 +57,14 @@ export function ClientAuthPortal({
   const [authBusy, setAuthBusy] = useState(false);
   const [forgotBusy, setForgotBusy] = useState(false);
   const [forgotSent, setForgotSent] = useState(false);
-  const [tab, setTab] = useState<"invoices" | "quotes" | "jobs" | "referrals" | "payment">("invoices");
+  const [tab, setTab] = useState<"invoices" | "quotes" | "jobs" | "coupons" | "referrals" | "payment">("invoices");
+  // Invite link (#/client?invite=TOKEN) — the business created this login
+  // for the customer; their details come pre-filled and they only pick a
+  // password. See create_portal_invites / portal_signup_with_invite in
+  // functions/api/public-data.ts.
+  const inviteToken = (() => { try { const h = window.location.hash; const q = h.indexOf("?"); return q >= 0 ? new URLSearchParams(h.slice(q + 1)).get("invite") || "" : ""; } catch { return ""; } })();
+  const [invite, setInvite] = useState<null | { firstName: string; lastName: string; email: string; phone: string; claimed: boolean; companyName: string; logoUrl: string; error?: string }>(null);
+  const [authInfo, setAuthInfo] = useState("");
   // FEATURE — multi-property switcher (see propertyOptions below); declared
   // up here (not near its usage further down) since this component has
   // early returns before that point and hooks can't be called conditionally.
@@ -149,7 +156,8 @@ export function ClientAuthPortal({
   // through the same login (e.g. one company services their house, a
   // different one mows their lawn). `accounts` is one entry per business
   // they're a customer of; `activeIdx` picks which one this screen shows.
-  type PortalAccount = { customer: Customer; jobs: Job[]; estimates: Estimate[]; settings: { stripePublishableKey?: string; stripeAccountId?: string; companyName?: string } | null };
+  type PortalCoupon = { id: string; name: string; description?: string; code: string; discountType: string; discountValue: number; validFrom?: string | null; validTo?: string | null; justForYou?: boolean };
+  type PortalAccount = { customer: Customer; jobs: Job[]; estimates: Estimate[]; settings: { stripePublishableKey?: string; stripeAccountId?: string; companyName?: string } | null; coupons?: PortalCoupon[] };
   const [portalData, setPortalData] = useState<{ accounts: PortalAccount[] } | null>(null);
   const [portalDataLoading, setPortalDataLoading] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -224,7 +232,7 @@ export function ClientAuthPortal({
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error) throw new Error(data?.error || "Request failed");
       setConnectedOwnerIds(prev => [...prev, ownerId]);
-      toast?.("Request sent ✓ — they'll confirm you as a customer soon", "green");
+      toast?.(data?.alreadyConnected ? "You're already connected — opening your account" : "Request sent ✓ — they'll confirm you as a customer soon", "green");
       // Open the new account right away instead of leaving the customer on
       // the search screen with nothing to do.
       setFindOpen(false);
@@ -246,6 +254,27 @@ export function ClientAuthPortal({
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => subscription.unsubscribe();
   }, [demoMode]);
+
+  useEffect(() => {
+    if (!inviteToken || demoMode) return;
+    fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_portal_invite", token: inviteToken }) })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) { setInvite({ firstName: "", lastName: "", email: "", phone: "", claimed: false, companyName: "", logoUrl: "", error: d?.error || "This invite link isn't valid anymore." }); return; }
+        setInvite(d);
+        setFirstName(d.firstName || ""); setLastName(d.lastName || ""); setPhone(d.phone || ""); if (d.email) setEmail(d.email);
+        setMode(d.claimed ? "login" : "signup");
+      })
+      .catch(() => {});
+  }, [inviteToken, demoMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Already signed in and opened an invite → attach that customer record.
+  const claimedRef = useRef(false);
+  useEffect(() => {
+    if (!inviteToken || demoMode || !session?.access_token || claimedRef.current) return;
+    claimedRef.current = true;
+    fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: "claim_portal_invite", token: inviteToken }) })
+      .then(r => r.json()).then(() => fetchPortalData()).catch(() => {});
+  }, [inviteToken, session?.access_token, demoMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch (or re-fetch, e.g. right after signup/login flips `session`) the
   // customer's own portal data whenever a session becomes available.
@@ -360,9 +389,37 @@ export function ClientAuthPortal({
     if (!email.trim() || !password.trim()) { setAuthError("Email and password are required"); return; }
     setAuthBusy(true);
     try {
-      if (mode === "signup") {
-        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
+      if (mode === "signup" && inviteToken && invite && !invite.error) {
+        // Invite: for the e-mail the business has on file, the server creates an
+        // already-confirmed login tied to this customer record and we sign straight in.
+        const res = await fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "portal_signup_with_invite", token: inviteToken, email: email.trim(), password, firstName, lastName, phone }) });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(out?.error || "Couldn't create your login");
+        if (out.existingAccount) { setMode("login"); setAuthInfo(out.message || "You already have a login — log in with your password."); return; }
+        if (out.confirmEmail) {
+          // No e-mail on file for this customer yet: normal sign-up, confirmed by e-mail.
+          const { error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { firstName, lastName, phone, role: "customer" } } });
+          if (error) throw error;
+          setMode("login"); setAuthInfo("Almost done — open the confirmation e-mail we just sent, then log in here.");
+          return;
+        }
+        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (error) throw error;
+        setSession(data.session || null);
+        toast?.("Welcome! Your account is ready.", "green");
+        return;
+      }
+      if (mode === "signup") {
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { firstName, lastName, phone, role: "customer" } } });
+        if (error) throw error;
+        // BUG FIX — "couldn't log in": when the project requires email
+        // confirmation, signUp returns no session and the form just sat
+        // there. Say what to do instead of looking broken.
+        if (!data.session) {
+          setMode("login");
+          setAuthInfo(`Almost done — we emailed ${email.trim()} a confirmation link. Open it, then log in here.`);
+          return;
+        }
         // BUG FIX — this used to fake a customer record into local React
         // state with no matching Supabase insert at all, so it silently
         // never persisted anywhere and vanished on reload/another device.
@@ -377,7 +434,8 @@ export function ClientAuthPortal({
         setSession(data.session || null);
       }
     } catch (e: any) {
-      setAuthError(e?.message || "Authentication failed");
+      const msg = String(e?.message || "");
+      setAuthError(/email not confirmed/i.test(msg) ? "Your email isn't confirmed yet — open the confirmation email we sent, then log in." : /invalid login/i.test(msg) ? "Wrong email or password. Tap \"Forgot password?\" to reset it." : (msg || "Authentication failed"));
     } finally {
       setAuthBusy(false);
     }
@@ -448,9 +506,15 @@ export function ClientAuthPortal({
                 <BrandMark className="w-9 h-9" />
               </div>
             )}
-            <div className="text-lg font-bold text-white">{companyName} — Client Portal</div>
-            <div className="text-xs text-white/40">Pay invoices, track jobs, and view your referral rewards</div>
+            <div className="text-lg font-bold text-white">{invite?.companyName || companyName} — Client Portal</div>
+            <div className="text-xs text-white/40">Pay invoices, track jobs, see your coupons and referral rewards</div>
           </div>
+          {invite && !invite.error && !invite.claimed && (
+            <Glass className="p-3 text-xs text-white/70 !border-green-700/40">
+              <span className="font-semibold text-white">{invite.companyName || "Your service company"} set up your account{invite.firstName ? `, ${invite.firstName}` : ""}.</span> Your details are filled in — just choose a password.
+            </Glass>
+          )}
+          {invite?.error && <Glass className="p-3 text-xs text-danger-300">{invite.error}</Glass>}
 
           <Glass className="p-5 space-y-3">
             <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
@@ -476,6 +540,7 @@ export function ClientAuthPortal({
             <div className="flex justify-end -mt-1">
               <button type="button" onClick={() => setShowPassword(v => !v)} className="text-xs font-medium text-white/60 hover:text-white">{showPassword ? "Hide password" : "Show password"}</button>
             </div>
+            {authInfo && <div className="text-xs text-green-400">{authInfo}</div>}
             {authError && <div className="text-xs text-danger-400">{authError}</div>}
             <GBtn onClick={handleAuth} disabled={authBusy} className="w-full !py-3">{authBusy ? "Please wait…" : mode === "login" ? "Log In" : "Create Account"}</GBtn>
             {mode === "login" && (
@@ -730,10 +795,34 @@ export function ClientAuthPortal({
               only invoiced ones showed, under "Invoices"), and renamed
               "Past Jobs" -> "Jobs" since that tab now shows upcoming AND
               past jobs together (see below). */}
-          {([["invoices", "Invoices", Receipt], ["quotes", "Quotes", FileText], ["jobs", "Jobs", Clock], ["referrals", "Referrals", Gift], ["payment", "Payment", CreditCard]] as const).map(([key, label, Icon]) => (
+          {([["invoices", "Invoices", Receipt], ["quotes", "Quotes", FileText], ["jobs", "Jobs", Clock], ["coupons", `Coupons${(active?.coupons || []).length ? ` (${(active?.coupons || []).length})` : ""}`, Tag], ["referrals", "Referrals", Gift], ["payment", "Payment", CreditCard]] as const).map(([key, label, Icon]) => (
             <button key={key} onClick={() => setTab(key)} className={"flex-1 py-2 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 whitespace-nowrap " + (tab === key ? "bg-brand-700/40 text-white border border-brand-700/50" : "text-white/50")}><Icon size={12} />{label}</button>
           ))}
         </div>
+
+        {tab === "coupons" && (
+          <div className="space-y-3">
+            {(active?.coupons || []).length === 0 && <Glass className="p-6 text-center text-sm text-white/40">No coupons right now — when {companyName} sends you one (like a birthday coupon), it shows up here.</Glass>}
+            {(active?.coupons || []).map(cp => {
+              const daysLeft = cp.validTo ? Math.ceil((Date.parse(cp.validTo + "T23:59:59") - Date.now()) / 86400000) : null;
+              return (
+                <Glass key={cp.id} className={"p-4 space-y-2 " + (cp.justForYou ? "!border-yellow-600/40" : "")} data-coupon={cp.code}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm">{cp.discountType === "percent" ? `${cp.discountValue}% off` : `${fmt(cp.discountValue)} off`}{cp.justForYou && <span className="ml-2 text-[10px] text-yellow-300 font-normal">Just for you</span>}</div>
+                      <div className="text-xs text-white/50">{cp.name}{cp.description ? ` · ${cp.description}` : ""}</div>
+                    </div>
+                    <button onClick={() => { try { navigator.clipboard.writeText(cp.code); toast?.("Code copied ✓", "green"); } catch {} }} className="font-mono text-sm px-2.5 py-1 rounded-lg border border-dashed border-white/30 bg-white/5 hover:bg-white/10 flex-shrink-0">{cp.code}</button>
+                  </div>
+                  <div className={"text-[11px] " + (daysLeft !== null && daysLeft <= 7 ? "text-orange-300" : "text-white/45")}>
+                    {cp.validTo ? `Expires ${new Date(cp.validTo + "T12:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}${daysLeft !== null ? ` · ${daysLeft <= 0 ? "last day" : daysLeft === 1 ? "1 day left" : daysLeft + " days left"}` : ""}` : "No expiry date"}
+                    {" · "}Enter the code when you pay an invoice. One use.
+                  </div>
+                </Glass>
+              );
+            })}
+          </div>
+        )}
 
         {tab === "invoices" && (
           <div className="space-y-3">

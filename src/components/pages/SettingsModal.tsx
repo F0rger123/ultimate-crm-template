@@ -32,6 +32,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { refreshEmpGoogleToken, getLastGoogleRefreshError } from "../../lib/googleApi";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
+import { deleteByIds } from "../../lib/dbBulk";
 import { getOwnerStripeStatus, saveOwnerStripeKeys, getStripeConnectAuthorizeUrl, type OwnerStripeStatus } from "../../lib/stripe";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -2683,9 +2684,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 // told the owner their only backup copy (the just-downloaded
                 // JSON) was safe to rely on, while the rows still existed
                 // server-side and would reappear on the next sync.
-                const { data: deletedRows, error } = await (supabase as any).from("jobs").delete().in("id", ids).select("id");
-                if (error) { toast?.("Some jobs may not have deleted from the server — " + error.message, "red"); return; }
-                const deletedIds = Array.isArray(deletedRows) ? deletedRows.map((r: any) => r.id) : [];
+                const del = await deleteByIds("jobs", ids);
+                if (del.error && del.deleted.length === 0) { toast?.("Some jobs may not have deleted from the server — " + del.error, "red"); return; }
+                const deletedIds = del.deleted;
                 if (deletedIds.length === 0) { toast?.("Nothing was deleted from the server — the jobs may already be gone or belong to a different account", "red"); return; }
                 if (deletedIds.length < ids.length) toast?.(`Only ${deletedIds.length} of ${ids.length} job(s) actually deleted from the server — the rest may reappear`, "yellow");
                 setJobs((prev: any[]) => prev.filter(j => !deletedIds.includes(j.id)));

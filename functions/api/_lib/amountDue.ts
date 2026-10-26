@@ -12,12 +12,14 @@
 
 import { SUPABASE_URL } from "./env";
 
+import { promoUsable, promoDiscount } from "../../../src/lib/promoRules";
 export type PayType = "full" | "deposit" | "remaining";
 
 export type AmountDue = {
   baseCents: number;        // what is due before any tip
   payType: PayType;         // the option actually applied
   discountCents: number;    // promo/referral discount already subtracted
+  promoId?: string;         // the coupon that was applied (counted as used once paid)
 };
 
 const sbGet = async (path: string, serviceRoleKey: string): Promise<any[]> => {
@@ -64,13 +66,16 @@ export async function computeAmountDue(opts: {
   base = Math.max(0, Math.min(base, total));
 
   let discount = 0;
+  let appliedPromoId: string | undefined;
   if (opts.promoId) {
     const [promo] = await sbGet(`promotions?id=eq.${encodeURIComponent(opts.promoId)}&select=*`, serviceRoleKey);
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const valid = promo && promo.owner_id === est.owner_id && promo.status !== "ended"
-      && (!promo.validTo || promo.validTo >= todayStr)
-      && (!promo.usageLimit || (Number(promo.redeemedCount) || 0) < Number(promo.usageLimit));
-    if (valid) discount = promo.discountType === "percent" ? Math.round(base * Number(promo.discountValue)) / 100 : Number(promo.discountValue) || 0;
+    // Same rule the portal shows (src/lib/promoRules.ts): started, not
+    // expired, not used up, and — for a coupon made for one customer — only
+    // that customer.
+    if (promo && promoUsable(promo, { ownerId: est.owner_id, customerId: est.customerId || est.customer_id })) {
+      discount = promoDiscount(promo, base);
+      if (discount > 0) appliedPromoId = promo.id;
+    }
   } else if (opts.referrerId) {
     const [referrer] = await sbGet(`customers?id=eq.${encodeURIComponent(opts.referrerId)}&select=id,owner_id`, serviceRoleKey);
     const custId = est.customerId || est.customer_id;
@@ -84,7 +89,7 @@ export async function computeAmountDue(opts: {
 
   const baseCents = toCents(base - discount);
   if (baseCents <= 0) throw new Error("Nothing is due on this invoice.");
-  return { baseCents, payType, discountCents: toCents(discount) };
+  return { baseCents, payType, discountCents: toCents(discount), ...(appliedPromoId && toCents(discount) > 0 ? { promoId: appliedPromoId } : {}) };
 }
 
 // Fields to write once a payment for `payType` has really gone through.

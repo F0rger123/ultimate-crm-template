@@ -24,6 +24,7 @@ import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES,
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
+import { deleteByIds } from "../../lib/dbBulk";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -88,6 +89,11 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
 
 export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [builderOpen, setBuilderOpen] = useState(false);
+  // BUG FIX — "Convert to Estimate" (Lead Intake) opened the builder for the
+  // lead, but App clears its preset id the moment the builder opens, so the
+  // builder saw the id change and reset to a blank form. The id is kept here
+  // for as long as this builder stays open.
+  const [builderFor, setBuilderFor] = useState("");
   // FEATURE (user report) — "when the owner goes into the estimate/quote
   // they declined, there should be a button that says 'Send a new
   // estimate,' allowing them to update the price to be cheaper." Seeds the
@@ -112,6 +118,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   // ISSUE 21 — FAB's "New Quote" now opens the builder immediately.
   useEffect(() => {
     if (!autoOpenNew) return;
+    setBuilderFor(presetCustomerId || "");
     setBuilderOpen(true);
     onAutoOpenNewConsumed?.();
   }, [autoOpenNew]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -371,17 +378,16 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       // reappears on the next cross-device sync. This bulk-delete path
       // (EstimatesPage.tsx, shared with invoices since an invoice is just
       // an estimate row with invoiced:true) never got this fix applied.
-      (supabase as any).from("estimates").delete().in("id", ids).select("id").then((r: any) => {
-        if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
-        else if (!Array.isArray(r?.data) || r.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear", "red");
+      deleteByIds("estimates", ids).then(r => {
+        if (r.failed) toast(`Removed ${r.deleted.length} of ${ids.length} on the server — the rest may reappear${r.error ? " (" + r.error + ")" : ""}`, "red");
       }).catch(() => {});
     });
     // Must also delete server-side — otherwise the next cross-device sync poll
     // just re-fetches these rows from Supabase and they reappear locally.
     try {
-      const { error, data } = await (supabase as any).from("estimates").delete().in("id", ids).select("id");
-      if (error) { toast(`Deleted locally, but failed to delete from server — ${error.message}`, "red"); return; }
-      if (!Array.isArray(data) || data.length === 0) { toast("Deleted locally, but the server didn't confirm the delete — it may reappear. Try again or refresh to check.", "red"); return; }
+      // Batches of 100 — a huge id list in one request fails outright.
+      const r = await deleteByIds("estimates", ids);
+      if (r.failed) { toast(`Deleted ${r.deleted.length} of ${ids.length} on the server${r.error ? " — " + r.error : ""}. The rest may reappear — try again.`, "red"); return; }
     } catch (err: any) {
       toast(`Deleted locally, but failed to delete from server — ${err?.message || "unknown error"}`, "red");
       return;
@@ -474,7 +480,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
             }} className="!text-xs"><Mail size={12} className="inline mr-1" />Email ({selected.length})</GBtn>
             <GBtn variant="danger" onClick={bulkDelete} className="!text-xs"><Trash2 size={12} className="inline mr-1" />Delete</GBtn>
           </>}
-          <GBtn onClick={() => setBuilderOpen(true)}><Plus size={14} className="inline mr-1.5" />New</GBtn>
+          <GBtn onClick={() => { setBuilderFor(""); setBuilderOpen(true); }}><Plus size={14} className="inline mr-1.5" />New</GBtn>
         </div>
       </div>
 
@@ -563,7 +569,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         })}
       </div>
 
-      <EstimateBuilder open={builderOpen} onClose={() => { setBuilderOpen(false); setResendDraft(null); }} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={presetCustomerId} initialDraft={resendDraft} onSave={est => {
+      <EstimateBuilder open={builderOpen} onClose={() => { setBuilderOpen(false); setResendDraft(null); setBuilderFor(""); }} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={builderFor} initialDraft={resendDraft} onSave={est => {
         // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
         // added by the multi-tenant migration (WITH CHECK owner_id =
         // current_owner_id()), so this insert was silently rejected.

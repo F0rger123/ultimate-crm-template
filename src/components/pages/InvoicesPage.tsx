@@ -32,6 +32,7 @@ import { useConfirm } from "../ui/ConfirmModal";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { supabase } from "../../lib/supabase";
+import { deleteByIds } from "../../lib/dbBulk";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -599,11 +600,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
     markRecentlyDeleted("estimates", ids);
     setSelected([]);
-    withTimeout((supabase as any).from("estimates").delete().in("id", ids).select("id"), 10000, "Invoice bulk delete")
+    withTimeout(deleteByIds("estimates", ids), 15000 + ids.length * 50, "Invoice bulk delete")
       .then((r: any) => {
-        if (r?.error) { toast?.("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
-        const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
-        if (deletedCount < ids.length) { toast?.(`Deleted locally, but only ${deletedCount}/${ids.length} confirmed on the server — some may reappear. Try again or refresh to check.`, "red"); return; }
+        if (r.failed) { toast?.(`Deleted ${r.deleted.length} of ${ids.length} on the server${r.error ? " — " + r.error : ""}. The rest may reappear — try again.`, "red"); return; }
         toast?.(ids.length + " invoice(s) deleted");
       })
       .catch((e: any) => toast?.("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));

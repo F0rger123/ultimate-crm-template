@@ -13,7 +13,9 @@ import { Upload, Link as LinkIcon, ClipboardPaste, Trash2, CheckCircle } from "l
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
-import { parseDelimited, splitHeader, autoMapColumns, applyMapping, CUSTOM, SKIP, type ImportFieldMap, type ColumnTarget } from "../../lib/customerImport";
+import { parseDelimited, splitHeader, autoMapColumns, applyMapping, sniffColumns, CUSTOM, SKIP, type ImportFieldMap, type ColumnTarget } from "../../lib/customerImport";
+import { fetchGoogleSheetCsv } from "../../lib/googleSheet";
+import { readImportFile, IMPORT_FILE_ACCEPT } from "../../lib/spreadsheetFile";
 
 export type { ImportFieldMap };
 
@@ -48,7 +50,7 @@ const smartParseFreeform = (text: string): { headers: string[]; data: string[][]
 };
 
 // Turns a normal Google Sheets share URL into its CSV export endpoint.
-// Requires the sheet be shared as "Anyone with the link can view".
+// Only used to check the link; /api/sheet-fetch does the fetching.
 const sheetsUrlToCsvExport = (url: string): string | null => {
   const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (!m) return null;
@@ -64,7 +66,7 @@ const DEFAULT_LABELS: Record<string, string> = {
 };
 const PREVIEW_ROWS = 100;
 
-export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap, fieldLabels, fieldExclude, onImport, toast = (() => {}) as any, initialTab = "file", note }: {
+export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap, fieldLabels, fieldExclude, onImport, toast = (() => {}) as any, initialTab = "file", note, reviewExtras }: {
   open: boolean; onClose: () => void; title?: string; fieldMap: ImportFieldMap;
   fieldLabels?: Record<string, string>; fieldExclude?: Record<string, RegExp>;
   // Rows are keyed by field key; columns kept as custom fields arrive as
@@ -72,6 +74,9 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
   // default "Imported N rows" toast (or throw to show an error).
   onImport: (rows: Record<string, string>[]) => void | string | Promise<void | string>;
   toast?: (msg: string, tone?: any) => void; initialTab?: "file" | "sheets" | "paste"; note?: string;
+  // Extra controls on the review step (e.g. "import these as customers or
+  // leads"), given the mapped rows so it can show counts.
+  reviewExtras?: (rows: Record<string, string>[]) => React.ReactNode;
 }) {
   const [tab, setTab] = useState<"file" | "sheets" | "paste">(initialTab);
   const [sheetsUrl, setSheetsUrl] = useState("");
@@ -94,11 +99,16 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
   const reset = () => { setSrc(null); setMapping([]); setExcluded(new Set()); setEdits({}); setPasteText(""); setSheetsUrl(""); };
   const close = () => { if (busy) return; reset(); onClose(); };
 
-  const startReview = (text: string, fileName?: string) => {
-    let parsed = splitHeader(parseDelimited(text));
-    let map = parsed ? autoMapColumns(parsed.headers, fieldMap, fieldExclude) : [];
+  const startReview = (text: string, fileName?: string) => startReviewRows(parseDelimited(text), text, fileName);
+  const startReviewRows = (table: string[][], text: string, fileName?: string) => {
+    let parsed = splitHeader(table);
+    // No header row (the first line is already a customer): number the
+    // columns and let the values say what they are.
+    const width = Math.max(0, ...table.slice(0, 20).map(r => r.length));
+    if (!parsed && width >= 2) parsed = { headers: Array.from({ length: width }, (_, j) => `Column ${j + 1}`), data: table };
+    let map = parsed ? sniffColumns(parsed.headers, parsed.data, autoMapColumns(parsed.headers, fieldMap, fieldExclude), fieldMap) : [];
     // Nothing recognizable as a table → line-by-line detection instead.
-    if (!parsed || parsed.data.length === 0 || map.every(t => t === CUSTOM || t === SKIP)) {
+    if (text && (!parsed || parsed.data.length === 0 || map.every(t => t === CUSTOM || t === SKIP))) {
       const free = smartParseFreeform(text);
       if (free.data.length > 0) { parsed = free; map = autoMapColumns(free.headers, fieldMap, fieldExclude); }
     }
@@ -113,20 +123,24 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    const r = new FileReader();
-    r.onload = () => startReview(String(r.result || ""), file.name);
-    r.onerror = () => toast("Couldn't read that file", "red");
-    r.readAsText(file);
+    setBusy(true);
+    readImportFile(file)
+      .then(table => {
+        const plain = /\.(csv|tsv|txt)$/i.test(file.name) ? table.map(r => r.join("\t")).join("\n") : "";
+        startReviewRows(table, plain, file.name);
+      })
+      .catch((err: any) => toast(err?.message || "Couldn't read that file", "red"))
+      .finally(() => setBusy(false));
   };
 
   const handleSheetsImport = async () => {
-    const csvUrl = sheetsUrlToCsvExport(sheetsUrl.trim());
-    if (!csvUrl) { toast("That doesn't look like a Google Sheets link", "red"); return; }
+    if (!sheetsUrlToCsvExport(sheetsUrl.trim())) { toast("That doesn't look like a Google Sheets link", "red"); return; }
     setBusy(true);
     try {
-      const res = await fetch(csvUrl);
-      if (!res.ok) throw new Error("Sheet isn't shared publicly (\"Anyone with the link can view\") or the link is wrong");
-      startReview(await res.text());
+      // Fetched by the server (/api/sheet-fetch): works for private sheets
+      // through the connected Google account, and avoids the browser
+      // blocking Google's cross-site redirect.
+      startReview(await fetchGoogleSheetCsv(sheetsUrl.trim()));
     } catch (e: any) {
       toast(e?.message || "Failed to fetch that sheet", "red");
     } finally {
@@ -165,7 +179,7 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
         <div className="space-y-4">
           <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
             {([["file", "CSV File", Upload], ["sheets", "Google Sheets", LinkIcon], ["paste", "Paste Text", ClipboardPaste]] as const).map(([k, l, Icon]) => (
-              <button key={k} onClick={() => setTab(k)} className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 " + (tab === k ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50")}>
+              <button key={k} onClick={() => setTab(k)} className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 " + (tab === k ? "bg-brand-700/40 text-white border border-brand-700/50" : "text-white/50")}>
                 <Icon size={12} />{l}
               </button>
             ))}
@@ -174,17 +188,17 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
 
           {tab === "file" && (
             <div className="space-y-2">
-              <div className="text-xs text-white/50">Any CSV works — exports from Excel, Google Sheets, Google Contacts, Jobber, QuickBooks and other CRMs. Columns are matched automatically and you'll see how before anything is imported.</div>
-              <button onClick={() => fileRef.current?.click()} className="w-full py-8 rounded-xl border-2 border-dashed border-white/15 hover:border-red-600/40 text-white/50 hover:text-white/80 transition text-sm">
-                <Upload size={20} className="mx-auto mb-2" />Click to choose a .csv file
+              <div className="text-xs text-white/50">Excel (.xlsx), CSV, phone or Google contacts (.vcf) and JSON all work — exports from Excel, Google Sheets, Google Contacts, iPhone, Jobber, QuickBooks and other CRMs. Columns are matched by their names and by what's in them, and you'll see how before anything is imported.</div>
+              <button onClick={() => fileRef.current?.click()} disabled={busy} className="w-full py-8 rounded-xl border-2 border-dashed border-white/15 hover:border-brand-600/40 text-white/50 hover:text-white/80 transition text-sm">
+                <Upload size={20} className="mx-auto mb-2" />{busy ? "Reading…" : "Click to choose a file"}
               </button>
-              <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,text/csv" onChange={handleFile} className="hidden" />
+              <input ref={fileRef} type="file" accept={IMPORT_FILE_ACCEPT} onChange={handleFile} className="hidden" />
             </div>
           )}
 
           {tab === "sheets" && (
             <div className="space-y-2">
-              <div className="text-xs text-white/50">Paste a Google Sheets link. The sheet must be shared as "Anyone with the link can view" (Share → General access).</div>
+              <div className="text-xs text-white/50">Paste a Google Sheets link (copy it from the address bar; the tab you're on is the one imported). Works for sheets shared "Anyone with the link", and for private sheets owned by the Google account connected in Settings.</div>
               <GInput value={sheetsUrl} onChange={(e: any) => setSheetsUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." />
               <GBtn onClick={handleSheetsImport} disabled={busy || !sheetsUrl.trim()} className="w-full">{busy ? "Reading…" : "Read Sheet"}</GBtn>
             </div>
@@ -193,7 +207,7 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
           {tab === "paste" && (
             <div className="space-y-2">
               <div className="text-xs text-white/50">Paste a table with a header row (copied from Excel or Sheets works), OR plain text — one entry per line with a name, phone and/or email anywhere on the line.</div>
-              <textarea value={pasteText} onChange={(e: any) => setPasteText(e.target.value)} rows={8} placeholder={"First Name,Last Name,Email,Phone\nJane,Doe,jane@example.com,555-1234\n\n— or —\n\nJane Doe (717) 555-1234 jane@example.com"} className="w-full bg-black/40 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-red-500/50 font-mono resize-none" />
+              <textarea value={pasteText} onChange={(e: any) => setPasteText(e.target.value)} rows={8} placeholder={"First Name,Last Name,Email,Phone\nJane,Doe,jane@example.com,555-1234\n\n— or —\n\nJane Doe (555) 555-1234 jane@example.com"} className="w-full bg-black/40 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-brand-500/50 font-mono resize-none" />
               <GBtn onClick={() => startReview(pasteText)} disabled={!pasteText.trim()} className="w-full">Review Pasted Data</GBtn>
             </div>
           )}
@@ -251,11 +265,11 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
                         {usedKeys.map(k => (
                           <td key={k} className="p-1">
                             <input value={row[k] || ""} disabled={off} onChange={e => setEdits(p => ({ ...p, [idx]: { ...(p[idx] || {}), [k]: e.target.value } }))}
-                              className="w-full min-w-[90px] bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-red-500/50 disabled:opacity-50" />
+                              className="w-full min-w-[90px] bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-brand-500/50 disabled:opacity-50" />
                           </td>
                         ))}
                         {customCount > 0 && <td className="p-2 text-[10px] text-white/50 max-w-[220px] truncate" title={customs.map(k => `${k.slice(11)}: ${row[k]}`).join("\n")}>{customs.map(k => `${k.slice(11)}: ${row[k]}`).join(" · ") || "—"}</td>}
-                        <td className="p-2"><button onClick={() => setExcluded(s => new Set(s).add(idx))} className="text-white/30 hover:text-red-400 transition"><Trash2 size={12} /></button></td>
+                        <td className="p-2"><button onClick={() => setExcluded(s => new Set(s).add(idx))} className="text-white/30 hover:text-danger-400 transition"><Trash2 size={12} /></button></td>
                       </tr>
                     );
                   })}
@@ -263,6 +277,8 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
               </table>
             </div>
           </div>
+
+          {reviewExtras?.(rows.filter((r, i) => !excluded.has(i) && Object.keys(r).length > 0))}
 
           <div className="flex gap-2 justify-end pt-1">
             <GBtn variant="ghost" onClick={() => setSrc(null)} disabled={busy}>Back</GBtn>

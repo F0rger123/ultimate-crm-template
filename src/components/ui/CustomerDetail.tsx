@@ -1,4 +1,5 @@
 // auto-extracted from CRM Starter monolith
+import { getPortalInvites, sendPortalInvites, portalInviteLink } from "../../lib/portalInvites";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -433,6 +434,22 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
               <div className="text-xs text-white/50 uppercase tracking-wider">Lifetime</div>
               <div className="text-2xl font-bold text-brand-400">{fmt(c.totalSpent)}</div>
               <div className="flex items-center gap-1.5 justify-end mt-2">
+                <button
+                  onClick={async () => {
+                    try {
+                      const [inv] = await getPortalInvites([c.id]);
+                      if (!inv) throw new Error("customer not found");
+                      try { await navigator.clipboard.writeText(portalInviteLink(inv.token)); } catch { /* clipboard blocked */ }
+                      if (inv.claimed) { toast(`${c.firstName} already has a portal login — link copied`, "green"); return; }
+                      const r = await sendPortalInvites(settings, [{ ...inv, sentAt: null }]);
+                      toast(r.sent ? `Portal invite sent to ${c.firstName} ✓ (link copied too)` : r.failed ? "Couldn't send — " + (r.errors[0] || "unknown error") : "No phone/email to send to — link copied, share it yourself", r.failed ? "red" : "green");
+                    } catch (e: any) { toast("Couldn't create the portal invite — " + (e?.message || "unknown error"), "red"); }
+                  }}
+                  title="Send customer-portal invite (also copies the link)"
+                  className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition"
+                >
+                  <Send size={13} />
+                </button>
                 {onEdit && (
                   <button
                     onClick={() => onEdit(c)}
@@ -521,6 +538,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                     <a href={"https://www.phila.gov/property/#/" + encodeURIComponent(c.address || "")} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300">Lookup from satellite →</a>
                   </div>}
                 {c.gateCode && <div><div className="text-[10px] text-white/40">Gate Code</div><div className="font-mono font-bold text-yellow-300">🔒 {c.gateCode}</div></div>}
+                {(c as any).birthday && <div><div className="text-[10px] text-white/40">Birthday</div><div className="font-semibold">🎂 {(() => { const m = String((c as any).birthday).match(/(\d{2})-(\d{2})$/); return m ? new Date(2000, Number(m[1]) - 1, Number(m[2])).toLocaleDateString("en-US", { month: "long", day: "numeric" }) : (c as any).birthday; })()}</div></div>}
                 {c.hasDog && <div><div className="text-[10px] text-white/40">Dog on Property</div><div className="font-semibold">🐕 {c.dogName || "Yes"}</div></div>}
                 {c.sensitivePlants && <div className="col-span-2"><div className="text-[10px] text-white/40">Sensitive Plants</div><div className="text-white/80">🌿 {c.sensitivePlants}</div></div>}
                 {c.propertyNotes && <div className="col-span-2"><div className="text-[10px] text-white/40">Notes</div><div className="text-white/70">{c.propertyNotes}</div></div>}

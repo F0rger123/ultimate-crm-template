@@ -29,6 +29,9 @@ import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, se
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
+import { deleteByIds } from "../../lib/dbBulk";
+import { saveCustomersTolerant } from "../../lib/customerImport";
+import { getPortalInvites, sendPortalInvites } from "../../lib/portalInvites";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -205,6 +208,13 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
 
   const convertToCustomer = (lead: any) => {
     updateLeadCustomer({ ...lead, pipelineStage: "contacted" }, `${lead.firstName} ${lead.lastName} converted to customer ✓`);
+    // A lead that becomes a customer gets their portal link too (unless
+    // turned off under Customers → Portal invites).
+    if ((settings as any)?.autoPortalInvite !== false && (lead.phone || lead.email)) {
+      getPortalInvites([lead.id]).then(inv => sendPortalInvites(settings, inv))
+        .then(r => { if (r.sent) toast(`Portal invite sent to ${lead.firstName || "them"} ✓`, "green"); })
+        .catch(() => {});
+    }
   };
 
   const convertToEstimateAction = (lead: any) => {
@@ -225,11 +235,11 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
     if (!window.confirm(`Permanently delete lead "${lead.firstName} ${lead.lastName}"? This can't be undone.`)) return;
     setCustomers((prev: any[]) => prev.filter(c => c.id !== lead.id));
     markRecentlyDeleted("customers", [lead.id]);
-    (supabase as any).from("customers").delete().eq("id", lead.id)
+    (supabase as any).from("customers").delete().eq("id", lead.id).select("id")
       .then((result: any) => {
-        if (result?.error) {
-          console.error("[LeadIntake] delete failed:", result.error.message);
-          toast("Deleted locally, but failed to delete from server — " + result.error.message, "red");
+        if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) {
+          console.error("[LeadIntake] delete failed:", result?.error?.message || "0 rows");
+          toast("Deleted locally, but the server didn't delete it — " + (result?.error?.message || "it may come back"), "red");
           return;
         }
         toast(`${lead.firstName} ${lead.lastName} deleted ✓`, "green");
@@ -238,6 +248,49 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
         console.error("[LeadIntake] delete threw:", e?.message);
         toast("Deleted locally, but failed to delete from server — " + (e?.message || "unknown error"), "red");
       });
+  };
+
+  // Bulk actions — select many leads (or all of them) and move them to
+  // Customers or delete them. Needed after an import put a whole customer
+  // list into Lead Intake; one-by-one wasn't realistic for hundreds.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toggleSel = (id: string) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const moveSelectedToCustomers = async (ids: string[]) => {
+    if (!ids.length || bulkBusy) return;
+    if (!window.confirm(`Move ${ids.length} lead${ids.length !== 1 ? "s" : ""} to Customers? They'll leave Lead Intake and stay in your customer list.`)) return;
+    setBulkBusy(true);
+    const idSet = new Set(ids);
+    const moved = customers.filter((c: any) => idSet.has(c.id)).map((c: any) => ({ ...c, pipelineStage: null, leadArchived: false }));
+    setCustomers((prev: any[]) => prev.map(c => idSet.has(c.id) ? { ...c, pipelineStage: null, leadArchived: false } : c));
+    try {
+      const r = await saveCustomersTolerant(moved);
+      if (r.failed) toast(`Moved ${r.saved}, but ${r.failed} didn't save to the server — ${r.error || "unknown error"}`, "red");
+      else toast(`Moved ${r.saved} to Customers ✓`, "green");
+    } catch (e: any) {
+      toast("Move failed — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setBulkBusy(false);
+      setSelected(new Set());
+    }
+  };
+  const deleteSelected = async (ids: string[]) => {
+    if (!ids.length || bulkBusy) return;
+    if (!window.confirm(`Permanently delete ${ids.length} lead${ids.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    setBulkBusy(true);
+    markRecentlyDeleted("customers", ids);
+    try {
+      const r = await deleteByIds("customers", ids);
+      const gone = new Set(r.deleted);
+      setCustomers((prev: any[]) => prev.filter(c => !gone.has(c.id)));
+      if (r.failed) toast(`Deleted ${r.deleted.length}, but ${r.failed} weren't deleted on the server — ${r.error || "they may not belong to this account"}`, "red");
+      else toast(`Deleted ${r.deleted.length} lead${r.deleted.length !== 1 ? "s" : ""} ✓`, "green");
+    } catch (e: any) {
+      toast("Delete failed — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setBulkBusy(false);
+      setSelected(new Set());
+    }
   };
 
   const companyName = settings?.companyName || "CRM Starter";
@@ -435,10 +488,29 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
             <Glass className="p-6 text-center text-sm text-white/40">No leads match these filters.</Glass>
           ) : (
             <Glass className="overflow-hidden">
+              {(() => {
+                const ids = selected.size ? Array.from(selected) : [];
+                return (
+                  <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-2.5 border-b border-brand-900/30 bg-black/30">
+                    <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+                      <input type="checkbox" className="accent-brand-500" checked={visibleLeads.length > 0 && visibleLeads.every((c: any) => selected.has(c.id))}
+                        onChange={e => setSelected(e.target.checked ? new Set(visibleLeads.map((c: any) => c.id)) : new Set())} />
+                      {selected.size ? `${selected.size} selected` : `Select all ${visibleLeads.length}`}
+                    </label>
+                    {selected.size > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <GBtn variant="ghost" disabled={bulkBusy} onClick={() => moveSelectedToCustomers(ids)} className="!text-xs !py-1"><UserCheck size={12} className="inline mr-1" />{bulkBusy ? "Working…" : "Move to Customers"}</GBtn>
+                        <GBtn variant="ghost" disabled={bulkBusy} onClick={() => deleteSelected(ids)} className="!text-xs !py-1 !text-danger-300"><Trash2 size={12} className="inline mr-1" />Delete</GBtn>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-brand-900/30 bg-black/40">
+                      <th className="w-8 pl-4"></th>
                       <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider">Lead</th>
                       <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider hidden md:table-cell">Source</th>
                       <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider hidden lg:table-cell">Phone</th>
@@ -449,6 +521,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                   <tbody>
                     {visibleLeads.map((c: any) => (
                       <tr key={c.id} className={"border-b border-brand-900/10 hover:bg-white/5 transition " + (c.leadArchived ? "opacity-50" : "")}>
+                        <td className="pl-4 py-4 align-top"><input type="checkbox" className="accent-brand-500 mt-1" checked={selected.has(c.id)} onChange={() => toggleSel(c.id)} /></td>
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-medium">{c.firstName} {c.lastName}</span>

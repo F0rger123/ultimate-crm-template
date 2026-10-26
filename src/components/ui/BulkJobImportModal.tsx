@@ -8,7 +8,9 @@
 import React, { useState } from "react";
 import { Sparkles, Trash2, Loader2, UserPlus, Check } from "lucide-react";
 import { uid, today, pickLeastLoadedEmployee } from "../../lib/utils";
-import { callModel } from "../../lib/api";
+import { MODELS } from "../../lib/api";
+import { readAsTable, recordsFromTable, extractRecordsWithAI, parseFrequency, parseWeekday, matchEmployee, insertJobsTolerant } from "../../lib/bulkImport";
+import { parseDateLoose } from "../../lib/customerImport";
 import { supabase } from "../../lib/supabase";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
@@ -26,6 +28,10 @@ interface ParsedJobRow {
   scheduledDate: string;
   amount: string;
   notes: string;
+  scheduledTime: string;
+  frequency: string | null;
+  weekday: number | null;
+  cans: number;
   matchedCustomerId: string | null;
   assignedEmployeeId: string;
   skip: boolean;
@@ -64,20 +70,22 @@ export function BulkJobImportModal({
     if (!rawText.trim()) { toast?.("Paste some job info first", "red"); return; }
     setParsing(true);
     try {
-      const modelId = settings?.activeModel || "claude";
-      const prompt = `Extract a JSON array of service jobs from the pasted text below. It may mix client names, phone numbers, addresses, service dates, dollar amounts, and special instructions in ANY format — one per line, one per paragraph, copy-pasted from texts/emails/a spreadsheet, inconsistent order, whatever. Pull out as many real entries as you can find.
-
-Today's real date is ${today()} (YYYY-MM-DD) — resolve every relative or partial date ("next Tuesday", "9/26", "the 3rd") against this real date.
-
-Return ONLY a JSON array, no other text, no markdown fences, in exactly this shape (use "" for anything not given, never invent a value):
-[{"customerName":"","phone":"","email":"","address":"","scheduledDate":"YYYY-MM-DD or empty","amount":"digits and a decimal point only, no $ or commas, or empty","notes":"any special instructions"}]
-
-Text to parse:
-${rawText}`;
-      const res = await callModel({ modelId, apiKey: settings?.modelKeys?.[modelId] || "", messages: [{ role: "user", content: prompt }], maxTokens: 4000 });
-      const clean = (res.text || "[]").replace(/```json|```/g, "").trim();
+      // BUG FIX — a long list used to go to the AI in one request with a
+      // 4,000-token answer: it timed out or came back cut off (invalid JSON,
+      // nothing imported). A table is now read without AI; free text is read
+      // in pieces (lib/bulkImport.ts), with failover across the models that
+      // have keys. Schedules, times, cans and workers are read too.
+      const table = readAsTable(rawText);
       let parsed: any[];
-      try { parsed = JSON.parse(clean); } catch { throw new Error("The model's response wasn't valid JSON — try simplifying the pasted text and try again."); }
+      if (table) parsed = recordsFromTable(table.headers, table.data);
+      else {
+        const priority: string[] = settings?.modelPriority || Object.keys(MODELS);
+        const chain = Array.from(new Set([settings?.activeModel, ...priority, ...Object.keys(MODELS)].filter(Boolean)))
+          .filter((mid: any) => { const m: any = (MODELS as any)[mid]; return m && (!m.needsKey || !!settings?.modelKeys?.[mid]); }) as string[];
+        const out = await extractRecordsWithAI(rawText, chain, { onProgress: (d, t) => { if (t > 1) toast?.(`Reading the list: ${d}/${t} pieces`); } });
+        parsed = out.records;
+        if (out.failedPieces) toast?.(`${out.failedPieces} of ${out.pieces} pieces couldn't be read — check the list below for missing customers`, "yellow");
+      }
       if (!Array.isArray(parsed) || parsed.length === 0) { toast?.("Couldn't find any jobs in that text — try adding more detail (a name, address, or date per entry)", "red"); setParsing(false); return; }
       const defaultDate = today();
       // Simulates each row's assignment against a running copy of jobs so
@@ -85,15 +93,20 @@ ${rawText}`;
       // not just against jobs that already existed before pasting.
       const simulatedJobs = [...jobs];
       const newRows: ParsedJobRow[] = parsed.map((p: any) => {
-        const name = String(p.customerName || "").trim();
+        const name = String(p.customerName || p.fullName || [p.firstName, p.lastName].filter(Boolean).join(" ") || p.company || "").trim();
         const phone = String(p.phone || "").trim();
-        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(p.scheduledDate || "")) ? p.scheduledDate : defaultDate;
-        const empId = pickLeastLoadedEmployee(simulatedJobs, employees, date) || "";
+        const wd = parseWeekday(p.weekday);
+        const parsedDate = p.scheduledDate ? parseDateLoose(String(p.scheduledDate)) : "";
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(parsedDate) ? parsedDate : wd != null ? (() => { const d = new Date(); d.setDate(d.getDate() + ((wd - d.getDay() + 7) % 7)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })() : defaultDate;
+        const named = matchEmployee(p.worker, employees);
+        const empId = named?.id || pickLeastLoadedEmployee(simulatedJobs, employees, date) || "";
         if (empId) simulatedJobs.push({ scheduledDate: date, crew: [empId], status: "scheduled" });
         return {
           _key: uid(), customerName: name, phone, email: String(p.email || "").trim(),
-          address: String(p.address || "").trim(), scheduledDate: date,
-          amount: String(p.amount || "").replace(/[^0-9.]/g, ""), notes: String(p.notes || "").trim(),
+          address: [p.address, p.city, [p.state, p.zip].filter(Boolean).join(" ")].map((x: any) => String(x || "").trim()).filter(Boolean).join(", "), scheduledDate: date,
+          amount: String(p.amount || "").replace(/[^0-9.]/g, ""), notes: [p.service ? `Service: ${p.service}` : "", String(p.notes || "").trim()].filter(Boolean).join("\n"),
+          scheduledTime: /^\d{1,2}:\d{2}$/.test(String(p.scheduledTime || "")) ? String(p.scheduledTime).padStart(5, "0") : "",
+          frequency: parseFrequency(p.frequency), weekday: wd, cans: Math.max(0, Math.round(Number(String(p.cans || "").replace(/[^0-9.]/g, "")) || 0)),
           matchedCustomerId: findMatch(name, phone), assignedEmployeeId: empId, skip: false,
         };
       });
@@ -139,15 +152,20 @@ ${rawText}`;
         const empId = row.assignedEmployeeId || undefined;
         const jobRecord: any = {
           id: uid(), customerId, address: row.address || "", amount: parseFloat(row.amount) || 0,
-          status: "scheduled", scheduledDate: row.scheduledDate || today(), scheduledTime: "",
+          status: "scheduled", scheduledDate: row.scheduledDate || today(), scheduledTime: row.scheduledTime || "",
+          ...(row.frequency && row.frequency !== "one_time"
+            ? (row.weekday != null && row.frequency === "weekly"
+              ? { isRecurring: true, recurringMode: "weekdays", recurringFreq: "weekly", recurringWeekdays: [row.weekday], recurringInterval: 1 }
+              : { isRecurring: true, recurringMode: "preset", recurringFreq: row.frequency })
+            : {}),
           priority: "normal", crew: empId ? [empId] : [],
           ...(empId ? { crewAssignedAt: { [empId]: Date.now() } } : {}),
           checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
           loggedHours: 0, createdAt: today(), notes: row.notes || "", owner_id: ownerId,
         };
-        const { data: jobData, error: jobErr } = await (supabase as any).from("jobs").insert(jobRecord).select().single();
-        if (jobErr || !jobData) throw new Error(jobErr?.message || "Job save failed");
-        newJobs.push(jobData);
+        const saved = await insertJobsTolerant([jobRecord]);
+        if (!saved.saved) throw new Error(saved.errors[0] || "Job save failed");
+        newJobs.push(jobRecord);
         createdJobs++;
       } catch (e: any) {
         failed++;

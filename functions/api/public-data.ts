@@ -15,6 +15,8 @@
 // what bounds the query (an unguessable id, a verified session email, etc).
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./_lib/env";
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+import { promoUsable } from "../../src/lib/promoRules";
 
 
 const sb = async (serviceRoleKey: string, path: string, init?: RequestInit) => {
@@ -53,7 +55,10 @@ const resolveCallerEmail = async (accessToken: string, anonKey: string): Promise
   const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) return null;
   const user = await res.json().catch(() => null) as any;
-  return user?.email || null;
+  // Only a confirmed e-mail identifies a customer — an unconfirmed sign-up
+  // must not see the records of whoever owns that address.
+  if (!user?.email || !user?.email_confirmed_at) return null;
+  return user.email;
 };
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
@@ -669,7 +674,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             stripePublishableKey: fullSettings?.stripePublishableKey || stripeAcct?.stripe_publishable_key || (stripeAcct?.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
           };
         }
-        return { customer, jobs: jobsRow.data || [], estimates: estRow.data || [], settings };
+        // Coupons this customer can use right now (same rule as checkout —
+        // src/lib/promoRules.ts): started, not expired, not used up, and
+        // either for everyone or made for this customer. Drafts the owner
+        // never sent aren't shown.
+        let coupons: any[] = [];
+        if (customer.owner_id) {
+          const pr = await sb(serviceRoleKey, `promotions?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=*`);
+          coupons = (Array.isArray(pr.data) ? pr.data : [])
+            .filter((p: any) => p.code && p.status !== "draft" && promoUsable(p, { customerId: customer.id }))
+            .map((p: any) => ({ id: p.id, name: p.name, description: p.description || "", code: p.code, discountType: p.discountType, discountValue: Number(p.discountValue) || 0, validFrom: p.validFrom || null, validTo: p.validTo || null, justForYou: p.audience === "individual" }))
+            .sort((a: any, b: any) => String(a.validTo || "9999").localeCompare(String(b.validTo || "9999")));
+        }
+        return { customer, jobs: jobsRow.data || [], estimates: estRow.data || [], settings, coupons };
       }));
 
       return json({ accounts });
@@ -684,14 +701,33 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (q.length < 2) return json({ businesses: [] });
       const rows = await sb(serviceRoleKey, `app_settings?select=owner_id,data`);
       const all: any[] = Array.isArray(rows.data) ? rows.data : [];
-      // Ignore case, spaces and punctuation, so "smocks" finds "Smock's".
+      // Ignore case, spaces and punctuation, so "joes" finds "Joe's".
       const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const needle = norm(q);
       if (!needle) return json({ businesses: [] });
-      const matches = all
-        .filter(r => norm(r.data?.companyName).includes(needle))
-        .slice(0, 20)
-        .map(r => ({ ownerId: r.owner_id, companyName: r.data?.companyName || "Unnamed business", companyPhone: r.data?.companyPhone || "", logoUrl: r.data?.logoUrl || "" }));
+      // Also matches the business phone, owner name and city, and every
+      // word separately ("joe clean" finds "Joe's Cleaning Co");
+      // best matches first so the right business is always at the top.
+      const digitsQ = q.replace(/\D/g, "");
+      const words = q.toLowerCase().split(/\s+/).map(norm).filter(w => w.length >= 2);
+      const scored = all.map(r => {
+        const d = r.data || {};
+        const name = norm(d.companyName);
+        if (!name) return null;
+        const hay = [name, norm(d.ownerName), norm(d.companyAddress), norm(d.companyCity)].join(" ");
+        let score = 0;
+        if (name === needle) score = 100;
+        else if (name.startsWith(needle)) score = 80;
+        else if (name.includes(needle)) score = 60;
+        else if (words.length > 1 && words.every(w => hay.includes(w))) score = 40;
+        else if (digitsQ.length >= 7 && String(d.companyPhone || "").replace(/\D/g, "").includes(digitsQ)) score = 50;
+        else if (needle.length >= 3 && hay.includes(needle)) score = 20;
+        return score ? { r, score } : null;
+      }).filter(Boolean) as { r: any; score: number }[];
+      scored.sort((a, b) => b.score - a.score || String(a.r.data?.companyName).localeCompare(String(b.r.data?.companyName)));
+      const seen = new Set<string>();
+      const matches = scored.filter(x => !seen.has(x.r.owner_id) && seen.add(x.r.owner_id)).slice(0, 20)
+        .map(({ r }) => ({ ownerId: r.owner_id, companyName: r.data?.companyName || "Unnamed business", companyPhone: r.data?.companyPhone || "", logoUrl: r.data?.logoUrl || r.data?.companyLogo || "", city: r.data?.companyCity || "" }));
       return json({ businesses: matches });
     }
 
@@ -708,7 +744,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const { ownerId, firstName, lastName, phone } = body;
       if (!ownerId) return json({ error: "Missing ownerId" }, 400);
       const existing = await sb(serviceRoleKey, `customers?owner_id=eq.${encodeURIComponent(ownerId)}&email=ilike.${encodeURIComponent(email)}&select=id`);
-      if (Array.isArray(existing.data) && existing.data.length > 0) return json({ error: "You're already connected to this business" }, 409);
+      // Already connected (or already asked) — just open that account.
+      if (Array.isArray(existing.data) && existing.data.length > 0) return json({ success: true, alreadyConnected: true });
       const insert = await insertTolerant(serviceRoleKey, "customers", {
           id: crypto.randomUUID(), owner_id: ownerId, email, firstName: String(firstName || "New").slice(0, 80), lastName: String(lastName || "Customer").slice(0, 80),
           // address/notes included like submit_lead_form — the insert used to
@@ -736,6 +773,155 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // Customer identity is resolved from their own verified session email,
     // exactly like client_cancel_job/client_reschedule_job below — never a
     // client-claimed customerId.
+    // ── Customer-portal invites ────────────────────────────────────────────
+    // FEATURE — "whenever you add a customer, create their portal login and
+    // send them a link that already has their information, so all they do
+    // is pick a password." An invite is an owner_records row (kind
+    // "portal_invite", id = the random token in the link, migration 0003).
+    // Opening #/client?invite=TOKEN pre-fills their name/email/phone.
+    // SECURITY — the portal finds a customer's records by their confirmed
+    // e-mail, at every business that has that address. So the invite may skip
+    // the "confirm your email" step only for the address the business already
+    // has on file for that customer (the link went to that customer). Any
+    // other address is refused, and a customer with no e-mail on file signs up
+    // the normal way and confirms it. Before this, an invite could hand out a
+    // confirmed login for someone else's address — and with it their records
+    // at other businesses — and could overwrite the e-mail on file.
+    const findInvite = async (token: string) => {
+      if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return null;
+      const r = await sb(serviceRoleKey, `owner_records?kind=eq.portal_invite&id=eq.${encodeURIComponent(token)}&deleted_at=is.null&select=owner_id,id,data`);
+      const row = Array.isArray(r.data) ? r.data[0] : null;
+      return row ? { ownerId: row.owner_id as string, token: row.id as string, ...(row.data || {}) } : null;
+    };
+    const inviteCustomer = async (inv: any) => {
+      const r = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(inv.customerId)}&owner_id=eq.${encodeURIComponent(inv.ownerId)}&select=*`);
+      return Array.isArray(r.data) ? r.data[0] : null;
+    };
+    const maskEmail = (e: string) => e.replace(/^(.)[^@]*(@.*)$/, "$1***$2");
+    const linkCustomerToEmail = async (inv: any, cust: any, email: string, extra: Record<string, string> = {}) => {
+      // Never replaces an address the business already has on file.
+      const patch: Record<string, unknown> = String(cust.email || "").trim() ? {} : { email };
+      for (const [k, v] of Object.entries(extra)) if (v && !String(cust[k] || "").trim()) patch[k] = String(v).slice(0, 80);
+      if (cust.pipelineStage === "lead") patch.pipelineStage = null;
+      await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(cust.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+      await sb(serviceRoleKey, `owner_records?on_conflict=owner_id,kind,id`, {
+        method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify([{ owner_id: inv.ownerId, kind: "portal_invite", id: inv.token, data: { customerId: inv.customerId, createdAt: inv.createdAt, sentAt: inv.sentAt || null, claimedAt: new Date().toISOString(), claimedEmail: email }, deleted_at: null }]),
+      });
+    };
+
+    if (action === "create_portal_invites") {
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const ownerId = await resolveCallerOwnerId(accessToken).catch(() => null);
+      if (!ownerId) return json({ error: "Sign in as the business owner" }, 401);
+      const ids: string[] = Array.isArray(body.customerIds) ? body.customerIds.slice(0, 2000).map(String) : [];
+      if (!ids.length) return json({ invites: [] });
+      const existing = await sb(serviceRoleKey, `owner_records?owner_id=eq.${encodeURIComponent(ownerId)}&kind=eq.portal_invite&deleted_at=is.null&select=id,data&limit=5000`);
+      const byCustomer = new Map<string, any>();
+      for (const r of (Array.isArray(existing.data) ? existing.data : [])) byCustomer.set(r.data?.customerId, { token: r.id, ...(r.data || {}) });
+      const out: any[] = [];
+      const fresh: any[] = [];
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const cr = await sb(serviceRoleKey, `customers?owner_id=eq.${encodeURIComponent(ownerId)}&id=in.(${chunk.map(encodeURIComponent).join(",")})&select=id,firstName,lastName,email,phone`);
+        for (const c of (Array.isArray(cr.data) ? cr.data : [])) {
+          let inv = byCustomer.get(c.id);
+          if (!inv) {
+            const bytes = crypto.getRandomValues(new Uint8Array(18));
+            const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+            inv = { token, customerId: c.id, createdAt: new Date().toISOString() };
+            fresh.push({ owner_id: ownerId, kind: "portal_invite", id: token, data: { customerId: c.id, createdAt: inv.createdAt }, deleted_at: null });
+          }
+          out.push({ customerId: c.id, token: inv.token, claimed: !!inv.claimedAt, sentAt: inv.sentAt || null, firstName: c.firstName || "", lastName: c.lastName || "", email: c.email || "", phone: c.phone || "" });
+        }
+      }
+      for (let i = 0; i < fresh.length; i += 200) {
+        const w = await sb(serviceRoleKey, `owner_records`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(fresh.slice(i, i + 200)) });
+        if (!w.ok) return json({ error: "Couldn't save the invites — run supabase/migrations/0003_owner_records_and_budget_entries.sql if you haven't." }, 500);
+      }
+      return json({ invites: out });
+    }
+
+    if (action === "mark_portal_invites_sent") {
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const ownerId = await resolveCallerOwnerId(accessToken).catch(() => null);
+      if (!ownerId) return json({ error: "Sign in as the business owner" }, 401);
+      const tokens: string[] = Array.isArray(body.tokens) ? body.tokens.slice(0, 2000).map(String) : [];
+      for (let i = 0; i < tokens.length; i += 100) {
+        const chunk = tokens.slice(i, i + 100);
+        const r = await sb(serviceRoleKey, `owner_records?owner_id=eq.${encodeURIComponent(ownerId)}&kind=eq.portal_invite&id=in.(${chunk.map(encodeURIComponent).join(",")})&select=id,data`);
+        const rows = (Array.isArray(r.data) ? r.data : []).map((x: any) => ({ owner_id: ownerId, kind: "portal_invite", id: x.id, data: { ...(x.data || {}), sentAt: new Date().toISOString() }, deleted_at: null }));
+        if (rows.length) await sb(serviceRoleKey, `owner_records?on_conflict=owner_id,kind,id`, { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(rows) });
+      }
+      return json({ success: true });
+    }
+
+    if (action === "get_portal_invite") {
+      const inv = await findInvite(String(body.token || ""));
+      if (!inv) return json({ error: "This invite link isn't valid anymore — ask the business for a new one." }, 404);
+      const cust = await inviteCustomer(inv);
+      if (!cust) return json({ error: "This invite link isn't valid anymore — ask the business for a new one." }, 404);
+      const sRow = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(inv.ownerId)}&select=data`);
+      const s = Array.isArray(sRow.data) ? sRow.data[0]?.data || {} : {};
+      return json({
+        firstName: cust.firstName || "", lastName: cust.lastName || "", email: cust.email || inv.claimedEmail || "", phone: cust.phone || "",
+        claimed: !!inv.claimedAt, companyName: s.companyName || "", logoUrl: s.logoUrl || s.companyLogo || "",
+      });
+    }
+
+    if (action === "portal_signup_with_invite") {
+      const inv = await findInvite(String(body.token || ""));
+      if (!inv) return json({ error: "This invite link isn't valid anymore — ask the business for a new one." }, 404);
+      const cust = await inviteCustomer(inv);
+      if (!cust) return json({ error: "This invite link isn't valid anymore — ask the business for a new one." }, 404);
+      const email = String(body.email || "").trim().toLowerCase();
+      const password = String(body.password || "");
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "Enter a valid email address" }, 400);
+      if (password.length < 6) return json({ error: "Password must be at least 6 characters" }, 400);
+      if (inv.claimedAt && inv.claimedEmail && inv.claimedEmail !== email) return json({ error: `This invite was already used by ${maskEmail(inv.claimedEmail)} — log in with that email.` }, 409);
+      const onFile = String(cust.email || "").trim().toLowerCase();
+      if (onFile && onFile !== email) return json({ error: `This invite is for the e-mail ${maskEmail(onFile)} the business has on file. Use that address, or ask them to update it.` }, 409);
+      if (!onFile) {
+        // No address on file: save it on the customer, then the browser signs
+        // up normally and the customer confirms the address before seeing anything.
+        await linkCustomerToEmail(inv, cust, email, { firstName: body.firstName, lastName: body.lastName, phone: body.phone });
+        return json({ confirmEmail: true, email });
+      }
+      const create = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+        method: "POST", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { firstName: body.firstName || cust.firstName || "", lastName: body.lastName || cust.lastName || "", role: "customer" } }),
+      });
+      const created: any = await create.json().catch(() => ({}));
+      if (!create.ok) {
+        const msg = String(created?.msg || created?.message || created?.error_description || "");
+        if (create.status === 422 || /already|registered|exists/i.test(msg)) {
+          // They already have a login (maybe from another business) — tie
+          // this customer record to it and have them log in.
+          await linkCustomerToEmail(inv, cust, email, { firstName: body.firstName, lastName: body.lastName, phone: body.phone });
+          return json({ existingAccount: true, email, message: "You already have a login with this email — log in with your password (or tap Forgot password)." });
+        }
+        return json({ error: "Couldn't create your login — " + (msg || `error ${create.status}`) }, 500);
+      }
+      await linkCustomerToEmail(inv, cust, email, { firstName: body.firstName, lastName: body.lastName, phone: body.phone });
+      return json({ success: true, email });
+    }
+
+    // Already logged in and opened an invite link → tie that customer record
+    // to this login (the link itself is the proof).
+    if (action === "claim_portal_invite") {
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const email = await resolveCallerEmail(accessToken, anonKey);
+      if (!email) return json({ error: "Not signed in" }, 401);
+      const inv = await findInvite(String(body.token || ""));
+      if (!inv) return json({ error: "This invite link isn't valid anymore" }, 404);
+      if (inv.claimedAt && inv.claimedEmail && inv.claimedEmail !== email.toLowerCase()) return json({ error: `This invite was already used by ${maskEmail(inv.claimedEmail)}` }, 409);
+      const cust = await inviteCustomer(inv);
+      if (!cust) return json({ error: "This invite link isn't valid anymore" }, 404);
+      if (String(cust.email || "").trim() && String(cust.email).trim().toLowerCase() !== email.toLowerCase()) return json({ error: `This invite is for ${maskEmail(String(cust.email).trim().toLowerCase())} — log in with that address.` }, 409);
+      await linkCustomerToEmail(inv, cust, email.toLowerCase());
+      return json({ success: true });
+    }
+
     if (action === "client_save_card_link") {
       const { stripeCustomerId, paymentMethodId, label, consentAt, setAsDefault } = body;
       if (!stripeCustomerId || !paymentMethodId) return json({ error: "Missing stripeCustomerId/paymentMethodId" }, 400);

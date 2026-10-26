@@ -158,9 +158,12 @@ export const MODELS: Record<string, ModelDef> = {
   },
   nvidia_deepseek_r1: {
     id: "nvidia_deepseek_r1",
-    modelId: "moonshotai/kimi-k3",
-    name: "Kimi K3",
-    label: "Kimi K3 (NVIDIA — Free)",
+    // Kimi K3 reached end of life on NVIDIA on 2026-10-15 (the API answers
+    // 410 Gone); Kimi K2.6 is the Kimi model NVIDIA still serves. Same slot
+    // id so saved model orders keep working.
+    modelId: "moonshotai/kimi-k2.6",
+    name: "Kimi K2.6",
+    label: "Kimi K2.6 (NVIDIA — Free)",
     provider: "nvidia",
     endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
     maxTokens: 8192,
@@ -168,7 +171,7 @@ export const MODELS: Record<string, ModelDef> = {
     color: "from-green-500 to-emerald-700",
     needsKey: true,
     supportsTools: true,
-    keyUrl: "https://build.nvidia.com/moonshotai/kimi-k3",
+    keyUrl: "https://build.nvidia.com/moonshotai/kimi-k2.6",
     apiLabel: "NVIDIA API Key",
     free: true,
   },
@@ -199,7 +202,7 @@ export const MODELS: Record<string, ModelDef> = {
     endpoint: "https://api.cerebras.ai/v1/chat/completions",
     maxTokens: 4096,
     contextWindow: 65536,
-    color: "from-orange-400 to-red-600",
+    color: "from-orange-400 to-brand-600",
     needsKey: true,
     supportsTools: true,
     keyUrl: "https://cloud.cerebras.ai/",

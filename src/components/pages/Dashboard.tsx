@@ -63,6 +63,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
+import { OwnerShiftBar } from "../ui/OwnerShiftBar";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
@@ -1328,8 +1329,9 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         <Glass className="p-4 !bg-black/30">
           <div className="flex items-center gap-2 text-xs text-white/40">
             <Briefcase size={13} />
-            No job assigned to you today — assign yourself to a job (Jobs → Edit → Assign Crew → your name) to clock in and track your own hours here.
+            No job assigned to you today — assign yourself to a job's crew to see it here.
           </div>
+          <div className="mt-2"><OwnerShiftBar ownerEmp={ownerEmp} toast={toast} /></div>
         </Glass>
       )}
       {ownerActiveJob && (
@@ -1353,12 +1355,13 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             {!ownerActiveJob.arrivedAt && (
               <GBtn onClick={ownerMarkArrived} className="flex-1 !justify-center !text-xs"><MapPin size={12} className="inline mr-1" />I'm Here</GBtn>
             )}
-            {ownerActiveJob.clockInAt ? (
-              <GBtn variant="danger" onClick={ownerClockOut} className="flex-1 !justify-center !text-xs"><Clock size={12} className="inline mr-1" />Clock Out</GBtn>
-            ) : (
-              <GBtn onClick={ownerClockIn} className="flex-1 !justify-center !text-xs"><Clock size={12} className="inline mr-1" />Clock In</GBtn>
+            {/* A per-job timer left running from before can still be stopped. */}
+            {ownerActiveJob.clockInAt && (
+              <GBtn variant="danger" onClick={ownerClockOut} className="flex-1 !justify-center !text-xs"><Clock size={12} className="inline mr-1" />Stop job timer</GBtn>
             )}
           </div>
+          {/* The owner clocks in for the day, not per job. */}
+          <div className="mt-2"><OwnerShiftBar ownerEmp={ownerEmp} toast={toast} /></div>
           {/* FIX 5 (mobile round 6) — OTW/Running Late, same customer-facing
               tools a technician has in the field portal. */}
           <div className="flex gap-2 flex-wrap mt-2">
@@ -1392,7 +1395,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             </div>
           </div>
           {ownerJobsToday.length === 0 ? (
-            <div className="text-[10px] text-white/30 text-center mt-2">Assign yourself to a job's crew, then use its Clock In/Out to track time here.</div>
+            <div className="text-[10px] text-white/30 text-center mt-2">Clock in for the day from My Work or the Jobs page to track your hours here.</div>
           ) : (
             <div className="mt-3 space-y-1.5">
               <div className="text-[10px] text-white/40 uppercase tracking-wider">My Jobs Today</div>
@@ -1779,7 +1782,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>
       )}
       {(w.weather ?? true) && settings.owmKey && wCurrent && (() => {
-        const todayJobs_ = jobs.filter(j => j.scheduledDate === today() && j.status === "scheduled");
+        const todayJobs_ = jobs.filter(j => j.scheduledDate === localDateStr() && j.status === "scheduled");
         const rainRisk = wCurrent.rainChance > 50;
         const freezeRisk = wCurrent.temp < 35;
         const windRisk = wCurrent.wind > 20;

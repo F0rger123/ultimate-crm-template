@@ -160,8 +160,8 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
   const deleteCandidate = (id: string) => {
     if (!window.confirm("Delete this candidate? This can't be undone.")) return;
     setCandidates(prev => prev.filter(c => c.id !== id));
-    (supabase as any).from("candidates").delete().eq("id", id)
-      .then((r: any) => { if (r?.error) toast?.("Failed to delete — " + r.error.message, "red"); else toast?.("Candidate deleted", "green"); })
+    (supabase as any).from("candidates").delete().eq("id", id).select("id")
+      .then((r: any) => { if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) toast?.("Failed to delete on the server — " + (r?.error?.message || "it may come back"), "red"); else toast?.("Candidate deleted", "green"); })
       .catch((e: any) => toast?.("Failed to delete — " + (e?.message || "unknown error"), "red"));
   };
 

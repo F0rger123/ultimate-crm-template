@@ -29,8 +29,10 @@
 // customer's opt-in flag flipping at the business whose Twilio number was
 // guessed.
 
+import { transcribeAudioBuffer, TRANSCRIBE_SETUP_HELP } from "./_lib/transcribe";
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
+import { findActiveWatch, handleWatchedReply } from "./_lib/alfredReplyWatch";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./_lib/env";
 
@@ -308,17 +310,6 @@ const fetchAppSettings = async (env: Record<string, string>, toNumber: string): 
 // separate Workers Cron Trigger feature this repo deliberately doesn't have
 // set up). Free tier: 10,000 "neurons" per day, comfortably enough for
 // normal voice-memo volume.
-const transcribeViaWorkersAI = async (ai: any, audioBuf: ArrayBuffer): Promise<string | null> => {
-  if (!ai) return null;
-  try {
-    const result: any = await ai.run("@cf/openai/whisper", { audio: Array.from(new Uint8Array(audioBuf)) });
-    const text = (result?.text || "").trim();
-    return text || null;
-  } catch (e: any) {
-    console.warn("[TwilioSmsWebhook] Workers AI transcription failed, will try OpenAI fallback if configured:", e?.message);
-    return null;
-  }
-};
 
 // FEATURE — free voice-memo replies. Cloudflare Workers AI's MeloTTS model
 // (same "AI" binding transcribeViaWorkersAI above already uses for the
@@ -388,23 +379,6 @@ const uploadVoiceMemo = async (serviceRoleKey: string, audioBuf: ArrayBuffer): P
 // harmless extra TTS call) rather than requiring exact wording.
 const VOICE_REQUEST_PHRASES = /\b(voice memo|voice message|voice note|say (it|that)|read (it|that)( to me)?|as a voice|out loud)\b/i;
 
-const transcribeViaOpenAI = async (audioBuf: ArrayBuffer, openaiKey: string): Promise<string | null> => {
-  if (!openaiKey) return null;
-  try {
-    const form = new FormData();
-    form.append("file", new Blob([audioBuf]), "voice-memo.ogg");
-    form.append("model", "whisper-1");
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST", headers: { Authorization: `Bearer ${openaiKey}` }, body: form,
-    });
-    if (!res.ok) throw new Error(`OpenAI Whisper failed (${res.status})`);
-    const data = await res.json() as { text?: string };
-    return (data.text || "").trim() || null;
-  } catch (e: any) {
-    console.error("[TwilioSmsWebhook] OpenAI transcription failed:", e?.message);
-    return null;
-  }
-};
 
 // FEATURE — "text/upload a photo or PDF to Alfred and say 'upload this to
 // this client'." Downloads the MMS media from Twilio (same auth pattern the
@@ -458,54 +432,69 @@ const rehostInboundMediaForInbox = async (mediaUrl: string, contentType: string,
   }
 };
 
-// Falls back to the plain text body whenever there's no audio, no working
-// transcription path, or the transcription call itself fails — Alfred still
-// gets SOMETHING to respond to rather than the whole request silently dying.
-const resolveIncomingText = async (params: Record<string, string>, bodyRaw: string, twilioSid: string, twilioToken: string, openaiKey: string, workersAi: any, serviceRoleKey?: string, ownerId?: string | null): Promise<string> => {
-  const numMedia = Number(params.NumMedia || "0");
-  if (numMedia <= 0) return bodyRaw;
-  const contentType = params.MediaContentType0 || "";
-  if (contentType.startsWith("image/") || contentType === "application/pdf") {
-    const mediaUrl = params.MediaUrl0;
-    if (!mediaUrl || !twilioSid || !twilioToken || !serviceRoleKey) {
-      return bodyRaw || "[sent a file, but the server isn't fully set up to receive it — check Twilio credentials and that SUPABASE_SERVICE_ROLE_KEY is configured]";
-    }
+// Turns an incoming text's attachments into words for Alfred.
+// BUG FIX (user report — texted files and voice memos should be recognized
+// and acted on). Only the FIRST attachment was ever looked at (a photo plus
+// a voice memo lost one of them), spreadsheets/CSVs were refused, and voice
+// memos only tried the older Cloudflare model then OpenAI. Now every
+// attachment is handled: voice memos go through _lib/transcribe.ts (same
+// engines as the chat), photos/PDFs/spreadsheets are saved and listed with
+// a clear hint of which tool fits (client/job list → prepare_import_from_file,
+// money document → import_financial_document). Falls back to the plain text
+// body whenever nothing could be read, so Alfred always gets something.
+const resolveIncomingText = async (params: Record<string, string>, bodyRaw: string, twilioSid: string, twilioToken: string, keys: Record<string, string>, workersAi: any, serviceRoleKey?: string, ownerId?: string | null): Promise<string> => {
+  const numMedia = Math.min(10, Number(params.NumMedia || "0"));
+  const sheetLinks = (bodyRaw.match(/https?:\/\/docs\.google\.com\/spreadsheets\/d\/[^\s)>"']+/gi) || []).slice(0, 3);
+  const sheetNote = sheetLinks.length ? `\n\n[Google Sheets link${sheetLinks.length > 1 ? "s" : ""}: ${sheetLinks.join(" ")} — if it's a client or job list, call prepare_import_from_file with sheetUrl.]` : "";
+  if (numMedia <= 0) return bodyRaw + sheetNote;
+  if (!twilioSid || !twilioToken) return bodyRaw || "[sent an attachment, but couldn't fetch it — check the Twilio Account SID / Auth Token in Settings]";
+  const auth = `Basic ${btoa(`${twilioSid}:${twilioToken}`)}`;
+  const spoken: string[] = [];
+  const files: string[] = [];
+  const problems: string[] = [];
+  let transcriptionMissing = false;
+  for (let i = 0; i < numMedia; i++) {
+    const mediaUrl = params[`MediaUrl${i}`];
+    const contentType = (params[`MediaContentType${i}`] || "").toLowerCase();
+    if (!mediaUrl) continue;
     try {
-      const mediaRes = await fetch(mediaUrl, { headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` } });
-      if (!mediaRes.ok) throw new Error(`Twilio media fetch failed (${mediaRes.status})`);
-      const buf = await mediaRes.arrayBuffer();
-      const uploaded = await uploadInboundMedia(serviceRoleKey, buf, contentType, ownerId ?? null);
-      if (!uploaded) return bodyRaw || "[sent a file, but it couldn't be saved — try again]";
-      console.log("[TwilioSmsWebhook] inbound file uploaded:", uploaded.url);
+      const res = await fetch(mediaUrl, { headers: { Authorization: auth } });
+      if (!res.ok) throw new Error(`Twilio media fetch failed (${res.status})`);
+      const buf = await res.arrayBuffer();
+      if (contentType.startsWith("audio/")) {
+        const t = await transcribeAudioBuffer(workersAi, keys, buf, contentType);
+        if (t.text) spoken.push(t.text);
+        else if (t.heardNothing) problems.push("a voice memo with no words in it");
+        else { transcriptionMissing = !t.configured; problems.push(t.configured ? "a voice memo that couldn't be transcribed (" + t.errors.slice(0, 2).join("; ") + ")" : "a voice memo"); }
+        continue;
+      }
+      if (!serviceRoleKey) { problems.push("a file (the server can't save files — SUPABASE_SERVICE_ROLE_KEY isn't set)"); continue; }
+      const uploaded = await uploadInboundMedia(serviceRoleKey, buf, contentType || "application/octet-stream", ownerId ?? null);
+      if (!uploaded) { problems.push("a file that couldn't be saved"); continue; }
+      const what = contentType.startsWith("image/") ? "photo" : contentType === "application/pdf" ? "PDF" : /csv|spreadsheet|excel|text\/plain|vcard/.test(contentType) ? "spreadsheet/list" : "file";
       // Deliberately NOT prefixed "[sent a" — isTranscriptionFailureNote()
-      // only short-circuits actual failure notes; this is real, actionable
-      // content the agent needs to see and act on (attach_file_to_customer).
-      return `[Attached file ready to save — url: ${uploaded.url}, type: ${contentType}, fileName: ${uploaded.fileName}]${bodyRaw ? `\n\n${bodyRaw}` : "\n\n(no caption — ask which customer this is for if it's not obvious from context)"}`;
+      // only short-circuits actual failure notes; this is real content.
+      files.push(`[Attached file ready to save — url: ${uploaded.url}, type: ${contentType}, fileName: ${uploaded.fileName}] (${what})`);
     } catch (e: any) {
-      console.error("[TwilioSmsWebhook] inbound file handling failed:", e?.message);
-      return bodyRaw || "[sent a file but saving it failed — try again]";
+      console.error("[TwilioSmsWebhook] inbound media", i, "failed:", e?.message);
+      problems.push("an attachment that couldn't be downloaded");
     }
   }
-  if (!contentType.startsWith("audio/")) return bodyRaw || "[sent an attachment that isn't a voice memo, photo, or PDF — no text to respond to]";
-  const mediaUrl = params.MediaUrl0;
-  if (!mediaUrl || !twilioSid || !twilioToken) {
-    console.warn("[TwilioSmsWebhook] voice memo received but Twilio media can't be fetched — check the Account SID/Auth Token");
-    return bodyRaw || "[sent a voice memo, but couldn't fetch it — check the Twilio Account SID in Settings]";
+  const parts: string[] = [];
+  if (spoken.length) parts.push(spoken.join("\n\n"));
+  if (bodyRaw) parts.push(spoken.length ? `(caption: ${bodyRaw})` : bodyRaw);
+  if (files.length) {
+    parts.push(files.join("\n"));
+    parts.push(bodyRaw || spoken.length
+      ? "(Files: a client or job list → prepare_import_from_file; receipts, bills, statements → import_financial_document; otherwise do what they asked — e.g. attach_file_to_customer.)"
+      : "(No caption — work out what the file is and act: a client or job list → prepare_import_from_file; receipts/bills/statements → import_financial_document; a photo of a property/job → ask which customer it's for. Ask only if it's genuinely unclear.)");
   }
-  try {
-    const audioRes = await fetch(mediaUrl, { headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` } });
-    if (!audioRes.ok) throw new Error(`Twilio media fetch failed (${audioRes.status})`);
-    const audioBuf = await audioRes.arrayBuffer();
-    const transcript = (await transcribeViaWorkersAI(workersAi, audioBuf)) || (await transcribeViaOpenAI(audioBuf, openaiKey));
-    if (!transcript) {
-      return bodyRaw || "[sent a voice memo, but transcription isn't set up — either add the free \"AI\" binding in Cloudflare Pages settings, or add an OpenAI key in Settings → AI Models]";
-    }
-    console.log("[TwilioSmsWebhook] voice memo transcribed:", transcript.slice(0, 100));
-    return bodyRaw ? `${transcript}\n\n(caption: ${bodyRaw})` : transcript;
-  } catch (e: any) {
-    console.error("[TwilioSmsWebhook] voice memo transcription failed:", e?.message);
-    return bodyRaw || "[sent a voice memo but transcription failed — try typing instead]";
+  if (problems.length && parts.length) parts.push(`(Also sent ${problems.join(", ")}.)`);
+  if (!parts.length) {
+    if (transcriptionMissing) return "[sent a voice memo, but voice isn't set up — " + TRANSCRIBE_SETUP_HELP + "]";
+    return "[sent " + (problems.join(", ") || "an attachment Alfred couldn't read") + " — try again, or type it instead]";
   }
+  return parts.join("\n\n") + sheetNote;
 };
 
 // BUG FIX — every resolveIncomingText failure path above returns one of
@@ -830,13 +819,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
       context.waitUntil(
         withDeadline(
-          resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
+          resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, { ...(modelKeys || {}), openai: (modelKeys || {}).openai || openaiKey }, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
             .then((text) => isTranscriptionFailureNote(text) ? text : runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
             .catch((e: any) => {
               console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
               return "Sorry, something went wrong on my end — try texting again.";
             }),
-          90000,
+          100000,
           "Sorry, that took too long and I had to stop — try again, maybe as a couple of shorter texts instead of one big one."
         ).then(async (reply) => {
           // FEATURE — free voice-memo replies. "always" mode voices every
@@ -908,7 +897,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, owmKey, weatherLocation, companyAddress, env: context.env as Record<string, string> };
         context.waitUntil((async () => {
           try {
-            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId);
+            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, { ...(modelKeys || {}), openai: (modelKeys || {}).openai || openaiKey }, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId);
             let reply: string;
             if (isTranscriptionFailureNote(text)) {
               reply = text;
@@ -1074,10 +1063,33 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       (!vacationMode.startDate || !vacationMode.endDate ||
         (new Date().toISOString().slice(0, 10) >= vacationMode.startDate && new Date().toISOString().slice(0, 10) <= vacationMode.endDate))
     );
-    if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match && (match.alfredAutoRespond || vacationFrontDeskActive)) {
+    const agentEligible = !isStop && !isStart && !isOptInKeyword && !isConfirm && match && (match.alfredAutoRespond || vacationFrontDeskActive);
+    // FEATURE — reply watching (see _lib/alfredReplyWatch.ts). If Alfred
+    // asked this customer something ("when's your birthday?") and is waiting
+    // on their answer, read the reply first: an answer gets saved to their
+    // file and reported to the owner; anything else carries on as usual.
+    if (!isStop && !isStart && !isOptInKeyword && !(isConfirm && match?.smsOptInPending) && match && ownerId && Object.keys(modelKeys || {}).length) {
+      const watch = await findActiveWatch(authHeaders, ownerId, match.id).catch(() => null);
+      if (watch) {
+        const watchCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, ownerPhone: myPhone, env: context.env as Record<string, string> };
+        const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
+        context.waitUntil((async () => {
+          try {
+            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, { ...(modelKeys || {}), openai: (modelKeys || {}).openai || openaiKey }, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId);
+            const handled = await handleWatchedReply(watchCtx, modelKeys, modelPriority, watch, match, text);
+            if (!handled && agentEligible) {
+              const reply = await runAlfredCustomerAgent(custCtx, match, modelKeys, modelPriority, text);
+              if (reply) await sendCustomerAgentReply(custCtx, from, reply);
+            }
+          } catch (e: any) { console.error("[TwilioSmsWebhook] reply watch failed:", e?.message); }
+        })());
+        return twiml();
+      }
+    }
+    if (agentEligible) {
       const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
       context.waitUntil(
-        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
+        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, { ...(modelKeys || {}), openai: (modelKeys || {}).openai || openaiKey }, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
           .then((text) => isTranscriptionFailureNote(text)
             // A customer should never see an internal setup detail like
             // "add the AI binding in Cloudflare" — keep it generic, unlike

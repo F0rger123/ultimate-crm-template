@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Mic, Play, Pause, Send, Trash2, Square } from "lucide-react";
+import { browserRecognizerUsable, markBrowserRecognizerBroken, RECOGNIZER_FATAL, recordVoice, transcribeAudio, canRecordAudio } from "../../lib/voiceCapture";
 
 // Records and transcribes voice input — Whisper API when an OpenAI key is
 // configured (more accurate, works on any browser), otherwise the browser's
@@ -12,10 +13,10 @@ import { Mic, Play, Pause, Send, Trash2, Square } from "lucide-react";
 //   button again — never stops on its own. On stop, the full text is pushed
 //   into the input box via onTranscript(text, false) for the user to edit
 //   and send themselves.
-// - "note": records actual audio for playback. On stop, nothing is sent yet —
-//   the user hears it back and explicitly presses Send (or Discard). Only on
-//   Send is the transcript produced and onTranscript(text, true) called.
-export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToRecord = false, dense = false, label }: { onTranscript?: (text: string, autoSend: boolean) => void; apiKey?: any; mode?: "dictate" | "note"; holdToRecord?: boolean; dense?: boolean; label?: string }) {
+// - "note": records audio. On stop it's transcribed on the server right away;
+//   the user can play it back, read/fix the transcript, and press Send (or
+//   Discard). Send calls onTranscript(text, true).
+export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToRecord = false, dense = false, label, autoStart = false, onDone }: { onTranscript?: (text: string, autoSend: boolean) => void; apiKey?: any; mode?: "dictate" | "note"; holdToRecord?: boolean; dense?: boolean; label?: string; autoStart?: boolean; onDone?: () => void }) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -98,8 +99,43 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
     setWaveLevels([4, 4, 4, 4, 4]);
   };
 
+  // Dictation without the browser's recognizer (see lib/voiceCapture.ts):
+  // record, and when the owner presses stop, the server turns it into text,
+  // which lands in the text box like normal dictation.
+  const serverDictRef = useRef<ReturnType<typeof recordVoice> | null>(null);
+  const dictPrefixRef = useRef("");
+  const startServerDictation = (keepText = "") => {
+    if (!canRecordAudio()) { alert("This browser can't use the microphone. Update it, or use your keyboard's mic button."); setRecording(false); onDone?.(); return; }
+    dictPrefixRef.current = keepText;
+    setLiveText(keepText ? keepText + " …" : "");
+    const h = recordVoice({ maxMs: 300000, onLevel: lv => setWaveLevels(Array.from({ length: 5 }, (_, i) => Math.max(4, Math.min(24, Math.round(lv * 24 * (0.6 + 0.4 * Math.abs(Math.sin(Date.now() / 120 + i)))))))) });
+    serverDictRef.current = h;
+    setRecording(true);
+    h.result.catch((e: any) => { serverDictRef.current = null; setRecording(false); alert(e?.message || "Couldn't use the microphone"); onDone?.(); });
+  };
+  const finishServerDictation = async () => {
+    const h = serverDictRef.current;
+    serverDictRef.current = null;
+    if (!h) return;
+    h.stop();
+    setRecording(false);
+    setProcessing(true);
+    try {
+      const blob = await h.result.catch(() => null);
+      const heard = blob ? await transcribeAudio(blob) : "";
+      const text = [dictPrefixRef.current, heard].filter(Boolean).join(" ").trim();
+      if (text) onTranscript?.(text, false);
+      else if (!dictPrefixRef.current) alert("Didn't catch anything — try again a little closer to the microphone.");
+    } catch (e: any) {
+      if (dictPrefixRef.current) onTranscript?.(dictPrefixRef.current, false);
+      alert(e?.message || "Couldn't turn that into text.");
+    } finally {
+      setProcessing(false); setLiveText(""); dictPrefixRef.current = ""; onDone?.();
+    }
+  };
+
   const startDictateRecognition = () => {
-    if (!SpeechRecognitionCtor) { alert("Voice input isn't supported in this browser. Try Chrome, or add an OpenAI key in Settings for Whisper transcription."); return; }
+    if (!browserRecognizerUsable()) { startServerDictation(); return; }
     finalTextRef.current = "";
     setLiveText("");
     keepListeningRef.current = true;
@@ -118,7 +154,19 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
         }
         setLiveText((finalTextRef.current + interim).trim());
       };
-      rec.onerror = (e: any) => { if (e.error === "not-allowed" || e.error === "service-not-allowed") { keepListeningRef.current = false; alert("Microphone access denied"); } };
+      rec.onerror = (e: any) => {
+        if (e.error === "not-allowed") { keepListeningRef.current = false; alert("Microphone access denied"); return; }
+        // The browser's recognizer can't work here (no connection to its
+        // speech service, etc.) — it used to restart forever and hear
+        // nothing. Keep what it already heard and record the rest instead.
+        if (RECOGNIZER_FATAL.has(e.error)) {
+          markBrowserRecognizerBroken(e.error);
+          keepListeningRef.current = false;
+          try { rec.abort(); } catch { /* stopped */ }
+          stopWaveVisualizer();
+          startServerDictation(finalTextRef.current.trim());
+        }
+      };
       // BLOCKER 6 (mobile round 9) — root cause of "dictation cuts off the
       // message": the browser recognizer times out after a few seconds of
       // silence even in continuous mode, and this restart-on-end WAS the
@@ -151,54 +199,95 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
     startWaveVisualizer();
   };
 
-  const startNoteRecording = async () => {
+  // ── Voice note ───────────────────────────────────────────────────────────
+  // BUG FIX — "I record, press stop, and it does nothing." Four problems:
+  //   1. It forced audio/webm, which iPhone Safari can't record — now uses
+  //      whatever the browser supports (webm, mp4/aac on iPhone).
+  //   2. It ran the browser's speech recognition at the same time as the
+  //      recorder; on an iPhone they fight over the microphone. Removed —
+  //      the recording is transcribed on the server (/api/alfred-transcribe:
+  //      free Cloudflare Whisper, then the owner's OpenAI/Groq key).
+  //   3. Pressing stop while the microphone was still opening did nothing;
+  //      the stop is now remembered and applied as soon as it opens.
+  //   4. Without an OpenAI key in the browser there was never a transcript,
+  //      so Send silently had nothing to send.
+  // After stop: play it back, see the transcript as soon as it's ready,
+  // fix it if needed, Send (or Discard). Errors are shown, never swallowed.
+  const pickMime = () => {
+    const MR: any = (window as any).MediaRecorder;
+    if (!MR?.isTypeSupported) return "";
+    return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/aac", "audio/ogg;codecs=opus"].find(t => MR.isTypeSupported(t)) || "";
+  };
+  const stopRequestedRef = useRef(false);
+  const startingRef = useRef(false);
+  const [noteText, setNoteText] = useState("");
+  const [noteStatus, setNoteStatus] = useState<"idle" | "transcribing" | "ready" | "error">("idle");
+  const [noteError, setNoteError] = useState("");
+  const blobRef = useRef<Blob | null>(null);
+
+  const transcribeOnServer = async (blob: Blob): Promise<string> => {
+    const text = await transcribeAudio(blob);
+    if (!text) throw new Error("Didn't catch any words in that — try again a little closer to the microphone.");
+    return text;
+  };
+  const transcribeNote = async (blob: Blob) => {
+    setNoteStatus("transcribing"); setNoteError("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let text = "";
+      try { text = await transcribeOnServer(blob); }
+      catch (serverErr: any) {
+        if (!apiKey) throw serverErr;
+        text = await transcribeWhisper(blob); // owner's OpenAI key typed into this browser
+      }
+      setNoteText(text.trim());
+      setNoteStatus("ready");
+    } catch (e: any) {
+      setNoteError(e?.message || "Couldn't transcribe that.");
+      setNoteStatus("error");
+    }
+  };
+
+  const startNoteRecording = async () => {
+    if (startingRef.current || mediaRef.current?.state === "recording") return;
+    if (!navigator.mediaDevices?.getUserMedia || !(window as any).MediaRecorder) { alert("This browser can't record audio. Update iOS/Safari, or use Chrome."); onDone?.(); return; }
+    startingRef.current = true; stopRequestedRef.current = false;
+    setRecording(true); setElapsed(0); setNoteText(""); setNoteStatus("idle"); setNoteError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } as any });
       streamRef.current = stream;
-      const mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+      const mime = pickMime();
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
       chunksRef.current = [];
-      liveTranscriptRef.current = "";
-      mr.ondataavailable = e => chunksRef.current.push(e.data);
+      mr.ondataavailable = e => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
       mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        streamRef.current?.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || mime || "audio/webm" });
+        blobRef.current = blob;
+        if (blob.size < 800) { setNoteError("Nothing was recorded — check that the microphone is allowed for this site."); setNoteStatus("error"); setPendingAudioUrl(URL.createObjectURL(blob)); return; }
         setPendingAudioUrl(URL.createObjectURL(blob));
+        transcribeNote(blob);
       };
       mediaRef.current = mr;
-      mr.start();
-
-      // No OpenAI key — run browser speech recognition alongside the recorder
-      // so a transcript is still available at Send time without a paid API.
-      if (!apiKey && SpeechRecognitionCtor) {
-        const rec = new SpeechRecognitionCtor();
-        rec.lang = "en-US";
-        rec.continuous = true;
-        rec.interimResults = false;
-        rec.onresult = (e: any) => {
-          let text = "";
-          for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
-          liveTranscriptRef.current = text.trim();
-        };
-        rec.onerror = () => {};
-        recognitionRef.current = rec;
-        rec.start();
-      }
-
-      setElapsed(0);
-      timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000);
-      setRecording(true);
-    } catch {
-      alert("Microphone access denied");
-    }
+      mr.start(500);
+      timerRef.current = setInterval(() => setElapsed(s => { if (s + 1 >= 600) stopRecording(); return s + 1; }), 1000);
+      startWaveVisualizer();
+      if (stopRequestedRef.current) stopRecording();
+    } catch (e: any) {
+      setRecording(false);
+      alert(e?.name === "NotAllowedError" ? "Microphone access is blocked — allow it for this site in your browser settings." : "Couldn't start recording — " + (e?.message || "unknown error"));
+      onDone?.();
+    } finally { startingRef.current = false; }
   };
 
   const stopRecording = () => {
     if (mode === "note") {
-      mediaRef.current?.stop();
-      streamRef.current?.getTracks().forEach(t => t.stop());
-      recognitionRef.current?.stop();
+      if (startingRef.current) { stopRequestedRef.current = true; return; } // mic still opening — stop as soon as it does
       stopTimer();
+      stopWaveVisualizer();
+      try { if (mediaRef.current && mediaRef.current.state !== "inactive") mediaRef.current.stop(); } catch { /* already stopped */ }
       setRecording(false);
     } else {
+      if (serverDictRef.current) { finishServerDictation(); return; }
       keepListeningRef.current = false;
       recognitionRef.current?.stop();
       setRecording(false);
@@ -206,6 +295,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
       const text = finalTextRef.current.trim() || liveText.trim();
       if (text) onTranscript?.(text, false);
       setLiveText("");
+      onDone?.();
     }
   };
 
@@ -215,14 +305,16 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
     else startDictateRecognition();
   };
 
-  // FEATURE — "if you choose STT or notes, the button should work when
-  // held or pressed." Push-to-talk: press down starts recording, release
-  // (anywhere — mouse/finger can slide off the button, still has to stop)
-  // ends it, instead of the click-to-toggle behavior used elsewhere in
-  // this app. Pointer Events unify mouse/touch/pen in one handler pair —
-  // preventDefault on pointerdown stops a touch from also firing a
-  // trailing synthetic click/mouse event, which would otherwise double-
-  // trigger start/stop on mobile.
+  // Started from a menu (AlfredPage): begin right away.
+  const autoStarted = useRef(false);
+  useEffect(() => { if (autoStart && !autoStarted.current) { autoStarted.current = true; toggleRecording(); } }, [autoStart]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { try { if (mediaRef.current?.state === "recording") mediaRef.current.stop(); } catch { } streamRef.current?.getTracks().forEach(t => t.stop()); stopTimer(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Stop a dictation recording only when this button really goes away — a
+  // quick remount (React dev mode, a parent re-render) must not end it.
+  const mountedRef = useRef(false);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; setTimeout(() => { if (!mountedRef.current) serverDictRef.current?.cancel(); }, 0); }; }, []);
+
+  // Press-and-hold (only where holdToRecord is set): press starts, release stops.
   const holdStartedRef = useRef(false);
   const onHoldStart = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -243,32 +335,21 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
     setPendingAudioUrl(null);
     setPlaying(false);
     chunksRef.current = [];
-    liveTranscriptRef.current = "";
+    blobRef.current = null;
+    setNoteText(""); setNoteStatus("idle"); setNoteError("");
+    onDone?.();
   };
 
-  const sendNote = async () => {
-    setProcessing(true);
-    try {
-      let text = "";
-      if (apiKey) {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        text = await transcribeWhisper(blob);
-      } else {
-        text = liveTranscriptRef.current;
-      }
-      if (text) onTranscript?.(text, true);
-      else alert("Couldn't transcribe that — try again or type your message.");
-    } catch (e: any) {
-      alert(e?.message || "Transcription failed");
-    } finally {
-      setProcessing(false);
-      discardNote();
-    }
+  const sendNote = () => {
+    const text = noteText.trim();
+    if (!text) return;
+    onTranscript?.(text, true);
+    discardNote();
   };
 
   const togglePlayback = () => {
     if (!audioElRef.current) return;
-    if (playing) { audioElRef.current.pause(); } else { audioElRef.current.play(); }
+    if (playing) { audioElRef.current.pause(); } else { audioElRef.current.play().catch(() => {}); }
   };
 
   useEffect(() => () => { if (pendingAudioUrl) URL.revokeObjectURL(pendingAudioUrl); }, [pendingAudioUrl]);
@@ -276,24 +357,37 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
 
   if (processing) return <div className="p-2 text-white/40"><div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" /></div>;
 
-  // Pending voice note — playback + explicit Send/Discard, never auto-sent.
+  // Recorded note — playback, transcript (editable), Send / Discard.
   if (pendingAudioUrl) {
     return (
-      <div className="flex items-center gap-1.5 bg-purple-950/30 border border-purple-700/40 rounded-xl px-2 py-1.5">
+      <div className="flex flex-col gap-1.5 bg-[#1b0d2a] border border-purple-700/60 rounded-xl px-2.5 py-2 w-[min(22rem,calc(100vw-7rem))] shadow-2xl" data-voice-note="ready">
         <audio ref={audioElRef} src={pendingAudioUrl} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} className="hidden" />
-        <button onClick={togglePlayback} className="p-1.5 rounded-lg text-purple-300 hover:bg-purple-900/40">{playing ? <Pause size={14} /> : <Play size={14} />}</button>
-        <span className="text-[11px] text-purple-200">{elapsed}s voice note</span>
-        <button onClick={discardNote} title="Discard" className="p-1.5 rounded-lg text-white/40 hover:text-danger-400 hover:bg-danger-900/20"><Trash2 size={13} /></button>
-        <button onClick={sendNote} title="Send" className="p-1.5 rounded-lg text-white bg-purple-700/50 hover:bg-purple-700/70 flex items-center gap-1"><Send size={13} /></button>
+        <div className="flex items-center gap-1.5">
+          <button onClick={togglePlayback} title={playing ? "Pause" : "Play it back"} className="p-1.5 rounded-lg text-purple-200 hover:bg-purple-900/40">{playing ? <Pause size={14} /> : <Play size={14} />}</button>
+          <span className="text-[11px] text-purple-200 flex-1">{elapsed}s voice note</span>
+          <button onClick={discardNote} title="Discard" className="p-1.5 rounded-lg text-white/50 hover:text-danger-400 hover:bg-brand-900/20"><Trash2 size={13} /></button>
+          <button onClick={sendNote} disabled={noteStatus !== "ready" || !noteText.trim()} title="Send to Alfred" className="px-2.5 py-1.5 rounded-lg text-white bg-purple-700/70 hover:bg-purple-600 disabled:opacity-40 flex items-center gap-1 text-[11px] font-semibold"><Send size={12} />Send</button>
+        </div>
+        {noteStatus === "transcribing" && <div className="text-[11px] text-purple-200/70 flex items-center gap-1.5"><span className="w-3 h-3 border-2 border-purple-300 border-t-transparent rounded-full animate-spin" />Turning it into text…</div>}
+        {noteStatus === "ready" && <textarea value={noteText} onChange={e => setNoteText(e.target.value)} rows={Math.min(5, Math.max(2, Math.ceil(noteText.length / 45)))} className="w-full bg-black/40 border border-purple-700/40 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-purple-400 resize-none" />}
+        {noteStatus === "error" && (
+          <div className="text-[11px] text-danger-300">
+            {noteError}
+            {blobRef.current && blobRef.current.size >= 800 && <button onClick={() => transcribeNote(blobRef.current!)} className="ml-2 underline text-purple-200">Try again</button>}
+          </div>
+        )}
       </div>
     );
   }
 
   if (recording && mode === "note") {
     return (
-      <button onClick={toggleRecording} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-danger-600/40 text-danger-300 animate-pulse" title="Click to stop recording">
-        <Mic size={14} /><span className="text-[11px] font-mono">{String(Math.floor(elapsed / 60)).padStart(2, "0")}:{String(elapsed % 60).padStart(2, "0")}</span>
-      </button>
+      <div className="flex items-center gap-2 bg-[#2a0d0d] border border-brand-700/60 rounded-xl px-2.5 py-1.5 shadow-2xl whitespace-nowrap" data-voice-note="recording">
+        <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse flex-shrink-0" />
+        <div className="flex items-center gap-0.5 h-6">{waveLevels.map((h, i) => <div key={i} className="w-0.5 bg-brand-400 rounded-full transition-[height] duration-75" style={{ height: h }} />)}</div>
+        <span className="text-[11px] font-mono text-danger-100">{String(Math.floor(elapsed / 60)).padStart(2, "0")}:{String(elapsed % 60).padStart(2, "0")}</span>
+        <button onClick={stopRecording} title="Stop" className="px-2.5 py-1 rounded-lg bg-brand-600 text-white text-[11px] font-semibold flex items-center gap-1"><Square size={11} />Stop</button>
+      </div>
     );
   }
 
@@ -305,7 +399,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
             <div key={i} className="w-0.5 bg-brand-400 rounded-full transition-[height] duration-75 text-brand-fg" style={{ height: h }} />
           ))}
         </div>
-        <span className="text-[11px] text-brand-100/80 truncate flex-1">{liveText || "Listening…"}</span>
+        <span className="text-[11px] text-brand-100/80 truncate flex-1">{liveText || (serverDictRef.current ? "Listening… (text appears when you stop)" : "Listening…")}</span>
         <button onClick={toggleRecording} title="Stop listening" className="p-1 rounded-lg text-danger-300 hover:bg-danger-900/40 flex-shrink-0"><Square size={12} /></button>
       </div>
     );

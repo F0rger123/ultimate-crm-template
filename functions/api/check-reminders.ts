@@ -22,6 +22,8 @@
 // `sent` flag, checked and set atomically per-row below).
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 import { SUPABASE_URL } from "./_lib/env";
+import { continueBulkSends } from "./_lib/bulkTextSend";
+import { runBirthdayOffers } from "./_lib/birthdayOffers";
 
 
 export const onRequest = async (context: { request: Request; env: Record<string, string> }) => {
@@ -36,9 +38,26 @@ export const onRequest = async (context: { request: Request; env: Record<string,
   }
 
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+
+  // Same scheduler also finishes owner-approved bulk texts that didn't fit
+  // in one go (_lib/bulkTextSend.ts) and sends birthday coupons
+  // (_lib/birthdayOffers.ts). Both need migration 0003; without it they
+  // find nothing and do nothing.
+  const twilioFor = async (ownerId: string) => {
+    const s = await getOwnerSecrets(ownerId, serviceRoleKey);
+    return s?.twilioAccountSid && s?.twilioAuthToken && s?.twilioFromNumber ? { sid: s.twilioAccountSid, token: s.twilioAuthToken, from: s.twilioFromNumber } : null;
+  };
+  const companyFor = async (ownerId: string) => {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data&limit=1`, { headers }).catch(() => null);
+    const rows = res ? await res.json().catch(() => []) : [];
+    return (Array.isArray(rows) && rows[0]?.data?.companyName) || "us";
+  };
+  const bulk = await continueBulkSends(headers, twilioFor).catch((e: any) => ({ sent: 0, owners: 0, error: e?.message }));
+  const birthdays = await runBirthdayOffers(headers, twilioFor, companyFor).catch((e: any) => ({ sent: 0, errors: [String(e?.message || e)] }));
+
   const dueRes = await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?sent=eq.false&due_at=lte.${encodeURIComponent(new Date().toISOString())}&select=id,owner_id,phone,message,due_at,recurring`, { headers });
   const due = await dueRes.json().catch(() => []);
-  if (!Array.isArray(due) || due.length === 0) return new Response(JSON.stringify({ sent: 0 }), { headers: { "Content-Type": "application/json" } });
+  if (!Array.isArray(due) || due.length === 0) return new Response(JSON.stringify({ sent: 0, bulk, birthdays }), { headers: { "Content-Type": "application/json" } });
 
   const settingsCache = new Map<string, any>();
   const getSettings = async (ownerId: string) => {
@@ -150,5 +169,5 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     }
   }
 
-  return new Response(JSON.stringify({ sent: sentCount, errors }), { headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify({ sent: sentCount, errors, bulk, birthdays }), { headers: { "Content-Type": "application/json" } });
 };

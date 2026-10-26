@@ -29,7 +29,14 @@ import { seedWeather } from "../../lib/weather";
 import { sendPushNotification } from "../../lib/push";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, automationFromTemplate } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
+import { readImportFile } from "../../lib/spreadsheetFile";
+import { readAttachmentFully, LIST_KINDS, KIND_LABEL } from "../../lib/attachmentReader";
+import { fetchGoogleSheetRows, GOOGLE_SHEET_URL } from "../../lib/googleSheet";
+import { browserRecognizerUsable, markBrowserRecognizerBroken, RECOGNIZER_FATAL, recordVoice, transcribeAudio, canRecordAudio } from "../../lib/voiceCapture";
+import { readAsTable, recordsFromTable, describeColumns, extractRecordsWithAI, buildImportPlan, planSummary, runImportPlan, type ImportPlan } from "../../lib/bulkImport";
 import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
+import { runAlfredHealthCheck } from "../ui/AlfredHealthPanel";
+import { searchCustomers as auditSearch, findDuplicateCustomers, customersMissingInfo, filterCustomers } from "../../lib/customerAudit";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -205,7 +212,7 @@ const alfredDepositFields = (inputs: any, total: number): { depositRequired: num
   return pct ? { depositRequired: pct, depositType: "percent", depositMandatory: inputs.depositMandatory } : { depositRequired: amt, depositType: "amount", depositMandatory: inputs.depositMandatory };
 };
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "", onResolveScreenHighlight }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], wins = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "", onResolveScreenHighlight }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; wins?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
   // FEATURE — "keep talking to it while looking through the CRM... Alfred
   // should have the context of the screen you're on." isActivePage drives
   // BOTH the poll-gating (see shouldPollAlfred usages below — this file's
@@ -432,6 +439,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // button) that were cramping the composer — see the composer's mic
   // button below for the full reasoning.
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
+  // Which recorder is open in the composer (picked from the mic menu). It
+  // lives outside the menu so tapping elsewhere can't cut a recording off.
+  const [voiceTool, setVoiceTool] = useState<null | "note" | "dictate">(null);
   // BUG FIX (user report) — "the second I attach [screenshots] it doesn't
   // let me send the message." The attach handlers used to reuse the same
   // `loading` state as a real model reply — the second that flipped true,
@@ -485,7 +495,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const rr = new FileReader();
       rr.onload = ev => {
         const dataUrl = ev.target!.result as string;
-        resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg", isPdf: file.type === "application/pdf" });
+        resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || (/\.(csv|tsv|txt|xlsx|xlsm|vcf|vcard|json)$/i.test(file.name) ? "application/octet-stream" : "image/jpeg"), isPdf: file.type === "application/pdf" });
       };
       rr.onerror = reject;
       rr.readAsDataURL(file);
@@ -1831,7 +1841,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
     send_estimate: "send_quotes",
     send_reminder: "message_customers", text_phone_number: "message_customers",
-    notify_all_customers: "mass_messaging",
+    notify_all_customers: "mass_messaging", send_bulk_text: "mass_messaging", set_birthday_offer: "mass_messaging", create_campaign: "automations",
     text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
     send_email_via_gmail: "send_email",
     text_me_document: "send_files", send_me_files: "send_files",
@@ -2150,6 +2160,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
   };
 
+  // Bulk texts are drafted first and only sent after the owner answers (see
+  // notify_all_customers / send_bulk_text) — same rule as text-Alfred.
+  // turnStartRef marks when the owner's current message started being
+  // handled, so a draft made during it can't be sent until they reply.
+  const bulkDraftsRef = useRef<Map<string, { id: string; message: string; recipients: any[]; createdAt: number; watchReplies?: any; campaignName?: string }>>(new Map());
+  const turnStartRef = useRef(0);
+  // Big lists for import (attached spreadsheets, long pastes) are kept here
+  // instead of being sent to the model whole — see prepare_import below.
+  const importBatchesRef = useRef<Map<string, { id: string; kind: "table" | "text"; name: string; headers?: string[]; data?: string[][]; text?: string; createdAt: number }>>(new Map());
+  const importPlansRef = useRef<Map<string, ImportPlan>>(new Map());
+  const directSendsRef = useRef(0);
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
     console.log("[AlfredTool] → call:", name, "input:", inputs);
@@ -2216,7 +2237,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const executeToolCore = async (name, inputs) => {
     try {
       switch (name) {
+        // Whole-CRM search (lib/customerAudit.ts): every word against name
+        // (typos, nicknames, sound-alikes), phone, email, address, company,
+        // tags, notes. Falls back to the old exact-fragment match.
         case "search_customers": {
+          const fuzzy = auditSearch(customers as any[], String(inputs.query || ""), 25);
+          if (fuzzy.total) {
+            const byId = new Map((customers as any[]).map((c: any) => [c.id, c]));
+            return { count: fuzzy.total, showing: fuzzy.results.length, customers: fuzzy.results.map(r => { const c: any = byId.get(r.id) || {}; return { ...r, totalSpent: c.totalSpent, notes: c.notes, tags: c.tags, smsOptOut: !!c.smsOptOut }; }) };
+          }
           const q = (inputs.query || "").toLowerCase();
           const results = customers.filter(c => (c.firstName + " " + c.lastName + " " + (c.email || "") + " " + (c.address || "")).toLowerCase().includes(q)).slice(0, 10).map(c => ({
             id: c.id, name: c.firstName + " " + c.lastName, email: c.email, phone: c.phone, address: c.address, totalSpent: c.totalSpent, notes: c.notes,
@@ -2227,6 +2256,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             smsOptOut: !!(c as any).smsOptOut,
           }));
           return { count: results.length, customers: results };
+        }
+        case "find_duplicate_customers": {
+          const r = findDuplicateCustomers(customers as any[], { includePossible: inputs.includePossible !== false });
+          return { success: true, customersChecked: r.customersChecked, groupsFound: r.groups.length, groups: r.groups.slice(0, 60), note: r.groups.length > 60 ? `${r.groups.length - 60} more groups not shown.` : undefined };
+        }
+        case "customers_missing_info": {
+          return { success: true, ...customersMissingInfo(customers as any[], Array.isArray(inputs.fields) ? inputs.fields : undefined, 60) };
+        }
+        case "filter_customers": {
+          const { ...f } = inputs || {};
+          return { success: true, ...filterCustomers(customers as any[], jobs as any[], f, 60) };
         }
         case "get_customer_details": {
           const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
@@ -3710,6 +3750,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, level: inputs.level };
         }
         case "send_reminder": {
+          if ((directSendsRef.current += 1) > 3) return { error: "Refused: more than 3 separate texts in one go. Use notify_all_customers so the owner can approve the list first." };
           // CRITICAL (Alfred functionality audit) — this used to look up
           // ONLY by customerId (no name fallback, unlike every other tool
           // here), and its schema didn't even declare `message`/`customerName`
@@ -4098,6 +4139,67 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // everything from chat." Kept read + one basic write per domain,
         // querying Supabase directly (owner-scoped) rather than needing
         // every one of these arrays threaded through as new props.
+        // Campaigns / birthday offer / income — stored in owner_records
+        // (migration 0003), which the CRM syncs every few seconds, so these
+        // show up on every device and text-Alfred sees them too.
+        // The owner's own check-ins (Accountability page) — for check-ins,
+        // briefings and when they ask, not to sprinkle into business work.
+        case "get_accountability_summary": {
+          const days = Math.max(1, Math.min(60, Number(inputs.days) || 7));
+          const since = daysFromNow(-days + 1);
+          const recent = (entries || []).filter((e: any) => (e.date || "") >= since).sort((a: any, b: any) => (a.date || "").localeCompare(b.date || ""));
+          const avg = (k: string) => recent.length ? Math.round((recent.reduce((s2: number, e: any) => s2 + (Number(e[k]) || 0), 0) / recent.length) * 10) / 10 : null;
+          let streak = 0; const dates = new Set((entries || []).map((e: any) => e.date));
+          for (let i = 0; i < 365; i++) { if (dates.has(daysFromNow(-i))) streak++; else if (i > 0) break; }
+          let personal: any[] = [];
+          try { personal = JSON.parse(localStorage.getItem("crm.reminders") || "[]"); } catch {}
+          return {
+            success: true, days, checkInsLogged: recent.length, streakDays: streak, checkedInToday: dates.has(today()),
+            averages: { sleepHours: avg("sleep"), waterOz: avg("water"), steps: avg("steps"), workoutMinutes: avg("gymMinutes"), mood: avg("mood") },
+            workoutDays: recent.filter((e: any) => (Number(e.gymMinutes) || 0) > 0 || e.gym).length,
+            notes: recent.filter((e: any) => e.notes).slice(-5).map((e: any) => `${e.date}: ${e.notes}`),
+            winsThisPeriod: (wins || []).filter((w: any) => (w.date || "") >= since).map((w: any) => w.text),
+            personalChecklistDue: personal.filter((r: any) => !r.lastDone || daysSince(r.lastDone) >= (r.frequency === "daily" ? 1 : 7)).map((r: any) => r.text),
+          };
+        }
+        case "check_connections": {
+          try {
+            const r = await runAlfredHealthCheck();
+            return { success: true, summary: r.summary, problems: r.checks.filter(c => !c.ok).map(c => `${c.area} — ${c.name}: ${c.detail}${c.fix ? " Fix: " + c.fix : ""}`), working: r.checks.filter(c => c.ok).map(c => `${c.name}: ${c.detail}`) };
+          } catch (e: any) { return { error: e?.message || "Health check failed" }; }
+        }
+        case "create_campaign": {
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          if (!inputs.name || !inputs.message) return { error: "name and message required" };
+          const sendAt = inputs.sendAt ? new Date(inputs.sendAt) : null;
+          if (sendAt && isNaN(sendAt.getTime())) return { error: "sendAt isn't a valid date/time." };
+          const camp = { id: uid(), name: inputs.name, ch: inputs.channel === "email" ? "email" : "sms", subject: inputs.subject || "", body: inputs.message, status: sendAt ? "scheduled" : "draft", sendAt: sendAt ? sendAt.toISOString() : undefined, createdAt: new Date().toISOString(), segment: Array.isArray(inputs.tags) && inputs.tags.length ? { tags: inputs.tags } : undefined, createdBy: "alfred" };
+          const r = await (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "campaigns", id: camp.id, data: camp, deleted_at: null }, { onConflict: "owner_id,kind,id" }).select("id");
+          if (r?.error || !r?.data?.length) return { error: "Couldn't save the campaign — " + (r?.error?.message || "the server didn't save it") + ". If it says owner_records doesn't exist, run supabase/migrations/0003_owner_records_and_budget_entries.sql." };
+          toast("Alfred created campaign: " + camp.name);
+          return { success: true, campaignId: camp.id, status: camp.status, note: "It's in Campaigns (shows up within a few seconds)." };
+        }
+        case "set_birthday_offer": {
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          const cur = await (supabase as any).from("owner_records").select("data").eq("owner_id", ownerId).eq("kind", "birthday_offer").eq("id", "default").maybeSingle();
+          if (cur?.error) return { error: "Couldn't read the setting — " + cur.error.message + ". Run supabase/migrations/0003_owner_records_and_budget_entries.sql if owner_records doesn't exist." };
+          const prev = cur?.data?.data || {};
+          const cfg = { ...prev, id: "default", active: !!inputs.active, discountPercent: Number(inputs.discountPercent ?? prev.discountPercent ?? 10), validDays: Number(inputs.validDays ?? prev.validDays ?? 30), message: inputs.message ?? prev.message };
+          const r = await (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "birthday_offer", id: "default", data: cfg, deleted_at: null }, { onConflict: "owner_id,kind,id" }).select("id");
+          if (r?.error || !r?.data?.length) return { error: "Couldn't save — " + (r?.error?.message || "the server didn't save it") };
+          const withBday = customers.filter((c: any) => c.birthday).length;
+          return { success: true, ...cfg, customersWithBirthdayOnFile: withBday, note: "Runs every morning from the reminders scheduler." };
+        }
+        case "log_income": {
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          const list: any[] = Array.isArray(inputs.entries) ? inputs.entries : [];
+          if (!list.length) return { error: "entries required" };
+          const rows = list.filter(e => Number(e.amount)).map(e => ({ id: uid(), owner_id: ownerId, kind: "income", category: e.category || "revenue", label: e.description || "Income", amount: Math.abs(Number(e.amount)), date: e.date || today() }));
+          const r = await (supabase as any).from("manual_budget_entries").insert(rows).select("id");
+          if (r?.error) return { error: "Couldn't save — " + r.error.message };
+          toast(`Logged ${rows.length} income entr${rows.length === 1 ? "y" : "ies"}`);
+          return { success: true, saved: r?.data?.length || 0, total: rows.reduce((s2, e) => s2 + e.amount, 0) };
+        }
         case "log_expense": {
           if (!inputs.amount || !inputs.description) return { error: "amount and description are required." };
           const exp = { id: uid(), date: inputs.date || today(), description: inputs.description, amount: Number(inputs.amount), category: inputs.category || "Other", vendor: inputs.vendor || "", isBusiness: true };
@@ -4140,6 +4242,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           } catch (e: any) { return { error: "Social posts aren't cloud-synced on this deployment yet, or the table doesn't exist — check the Social page directly." }; }
         }
         case "text_phone_number": {
+          if ((directSendsRef.current += 1) > 3) return { error: "Refused: more than 3 separate texts in one go. Use notify_all_customers so the owner can approve the list first." };
           if (!inputs.phone?.trim()) return { error: "phone required" };
           if (!inputs.message?.trim()) return { error: "message required" };
           if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys to send real SMS." };
@@ -4158,25 +4261,134 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred texted " + (inputs.label || inputs.phone) + " ✓");
           return { success: true, sentTo: inputs.label || inputs.phone, phone: inputs.phone, message: inputs.message };
         }
+        // FEATURE — "have it check with me which customers to send to … it
+        // should only send after I give the okay." Drafts the list; nothing
+        // is sent until send_bulk_text in a later message.
+        case "prepare_import": {
+          const batch = inputs.batchId ? importBatchesRef.current.get(String(inputs.batchId)) : null;
+          if (inputs.batchId && !batch) return { error: "That import batch isn't here anymore (they last until the page is reloaded) — ask the owner to attach or paste the list again." };
+          const text = batch?.kind === "text" ? batch.text || "" : String(inputs.text || "");
+          if (!batch && !text.trim()) return { error: "Give a batchId or the text to import." };
+          const category = inputs.serviceCategory === "trash_can" ? "trash_can" : "general";
+          let records: any[] = [];
+          let how = "";
+          let columns: Record<string, string> | undefined;
+          let failedPieces = 0;
+          const table = batch?.kind === "table" ? { headers: batch.headers || [], data: batch.data || [] } : readAsTable(text);
+          if (table) {
+            records = recordsFromTable(table.headers, table.data, inputs.columnOverrides || {});
+            how = `read as a table (${table.data.length} rows) without AI`;
+            columns = describeColumns(table.headers, inputs.columnOverrides || {});
+          } else {
+            const priority: string[] = (settings as any).modelPriority || Object.keys(MODELS);
+            const all = Array.from(new Set([...priority, ...Object.keys(MODELS)]));
+            const chain = all.filter(mid => { const m: any = (MODELS as any)[mid]; if (!m) return false; if (m.needsKey && !(settings.modelKeys || {})[mid]) return false; const st: any = (modelStatus as any)[mid]; return !(st?.lockedUntil > Date.now()); });
+            toast(`Reading the list in pieces…`);
+            const out = await extractRecordsWithAI(text, chain, { onProgress: (d, t) => { if (t > 1) toast(`Reading the list: ${d}/${t} pieces`); } });
+            records = out.records; failedPieces = out.failedPieces;
+            how = `read with AI in ${out.pieces} piece(s)` + (failedPieces ? ` — ${failedPieces} piece(s) couldn't be read` : "");
+          }
+          if (!records.length) return { error: "Couldn't find any customers in that list.", how };
+          const plan = buildImportPlan(records, { customers, employees, serviceCategory: category, createJobs: inputs.createJobs !== false, costPerCan: Number((settings as any)?.trashCanCostPerCan) || 5 });
+          importPlansRef.current.set(plan.id, plan);
+          return {
+            success: true, ...planSummary(plan), how, columns,
+            ...(failedPieces ? { warningPieces: `${failedPieces} piece(s) of the text couldn't be read — those customers are missing; tell the owner.` } : {}),
+            next: "NOTHING is saved yet. Show the owner these numbers, the warnings and the sample, and ask them to confirm. Call run_import with this planId only after they say yes.",
+          };
+        }
+        case "run_import": {
+          // Earlier tool results aren't in the chat history the model sees on
+          // the next message, so it often doesn't have the planId when the
+          // owner says "yes" — then the latest prepared plan is the one.
+          const plans = Array.from(importPlansRef.current.values()).sort((a, b) => b.createdAt - a.createdAt);
+          const plan = importPlansRef.current.get(String(inputs.planId || "")) || plans[0];
+          if (!plan) return { error: "There's no prepared import (plans last until the page is reloaded) — run prepare_import again." };
+          if (plan.createdAt >= turnStartRef.current) return { error: "Refused: the owner hasn't seen this summary yet. Show it and wait for their yes." };
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          importPlansRef.current.delete(plan.id);
+          const r = await runImportPlan(plan, { ownerId, onProgress: (label, d, t) => { if (t > 100) toast(`Saving ${label}: ${d}/${t}`); } });
+          const savedCustomers = [...plan.customers.added, ...plan.customers.updated];
+          if (r.customersSaved) setCustomers?.((prev: any[]) => {
+            const byId = new Map(savedCustomers.map((c: any) => [c.id, c]));
+            const kept = prev.map((c: any) => byId.get(c.id) || c);
+            const have = new Set(prev.map((c: any) => c.id));
+            return [...kept, ...plan.customers.added.filter((c: any) => !have.has(c.id))];
+          });
+          if (r.jobsSaved) {
+            const newJobIds = new Set(plan.jobs.map(j => j.id));
+            setJobs?.((prev: any[]) => [...prev.filter((j: any) => !newJobIds.has(j.id)), ...plan.jobs.map(j => ({ ...j, owner_id: ownerId }))]);
+          }
+          toast(`Imported ${r.customersSaved} customer${r.customersSaved !== 1 ? "s" : ""} and ${r.jobsSaved} job${r.jobsSaved !== 1 ? "s" : ""}` + (r.customersFailed || r.jobsFailed ? ` (${r.customersFailed + r.jobsFailed} failed)` : ""), r.customersFailed || r.jobsFailed ? "yellow" : "green");
+          return { success: r.customersFailed === 0 && r.jobsFailed === 0, ...r };
+        }
+        case "read_google_sheet": {
+          if (!GOOGLE_SHEET_URL.test(String(inputs.url || ""))) return { error: "That isn't a Google Sheets link." };
+          const note = await stashGoogleSheet(String(inputs.url));
+          return /couldn't be opened/.test(note) ? { error: note.replace(/^\[|\]$/g, "") } : { success: true, note };
+        }
+        case "read_pasted_text": {
+          const batch = importBatchesRef.current.get(String(inputs.batchId || ""));
+          if (!batch) return { error: "That paste isn't here anymore — ask the owner to paste it again." };
+          const full = batch.kind === "text" ? batch.text || "" : [batch.headers || [], ...(batch.data || [])].map(r => r.join("\t")).join("\n");
+          const pages = Math.max(1, Math.ceil(full.length / 8000));
+          const page = Math.min(pages, Math.max(1, Number(inputs.page) || 1));
+          return { page, pages, text: full.slice((page - 1) * 8000, page * 8000) };
+        }
         case "notify_all_customers": {
           if (!inputs.message?.trim()) return { error: "message required" };
+          let eligible = customers.filter((c: any) => c.phone && !c.smsOptOut && !((settings as any)?.testModeEnabled && c.isTestClient));
+          if (inputs.tag) { const t = String(inputs.tag).toLowerCase(); eligible = eligible.filter((c: any) => Array.isArray(c.tags) && c.tags.some((x: string) => String(x).toLowerCase() === t)); }
+          if (Array.isArray(inputs.customerNames) && inputs.customerNames.length) {
+            const names = inputs.customerNames.map((n: string) => String(n).toLowerCase().trim());
+            eligible = eligible.filter((c: any) => names.some((n: string) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(n)));
+          }
+          if (inputs.onlyMissing) eligible = eligible.filter((c: any) => !String(c[inputs.onlyMissing] || "").trim());
+          if (eligible.length === 0) return { error: "No eligible customers matched (check they have a phone on file, haven't opted out, and fit the filter)." };
+          const recipients = eligible.map((c: any, i: number) => ({ n: i + 1, customerId: c.id, name: `${c.firstName || ""} ${c.lastName || ""}`.trim() || c.phone, firstName: c.firstName || "", phone: c.phone }));
+          const draftId = uid();
+          bulkDraftsRef.current.set(draftId, { id: draftId, message: inputs.message, recipients, createdAt: Date.now(), watchReplies: inputs.watchReplies, campaignName: inputs.campaignName });
+          return {
+            success: true, draftId, notSentYet: true, recipientCount: recipients.length,
+            list: recipients.slice(0, 60).map((r: any) => `${r.n}. ${r.name}`), more: Math.max(0, recipients.length - 60),
+            sample: String(inputs.message).replace(/\{\{first_name\}\}/g, recipients[0].firstName || "there"),
+            next: "Nothing has been sent. Show the owner this numbered list and the sample, ask which to send to ('all', 'not 3 and 7', 'only 1, 2, 5'), and stop. Call send_bulk_text only after they answer.",
+          };
+        }
+        case "send_bulk_text": {
+          const draft = bulkDraftsRef.current.get(String(inputs.draftId || ""));
+          if (!draft) return { error: "That draft wasn't found (drafts last until the page is reloaded) — draft it again with notify_all_customers." };
+          if (draft.createdAt >= turnStartRef.current) return { error: "Refused: the owner hasn't seen this list yet. Show them the numbered list and wait for their reply before sending." };
           if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys to send real SMS." };
-          let eligible = customers.filter((c: any) => c.phone && !c.smsOptOut);
-          if (inputs.tag) eligible = eligible.filter((c: any) => Array.isArray(c.tags) && c.tags.includes(inputs.tag));
-          if (eligible.length === 0) return { error: "No eligible customers matched (check they have a phone on file and haven't opted out)." };
-          const capped = eligible.slice(0, 500);
+          const only = new Set<number>((Array.isArray(inputs.only) ? inputs.only : []).map(Number));
+          const exclude = new Set<number>((Array.isArray(inputs.exclude) ? inputs.exclude : []).map(Number));
+          const chosen = draft.recipients.filter((r: any) => only.size ? only.has(r.n) : !exclude.has(r.n));
+          if (!chosen.length) return { error: "With those choices nobody is left to send to." };
+          bulkDraftsRef.current.delete(draft.id);
+          let watchId: string | null = null;
+          if (draft.watchReplies?.question && ownerId) {
+            watchId = uid();
+            const days = Math.max(1, Math.min(120, Number(draft.watchReplies.days) || 30));
+            const watch = { id: watchId, question: draft.watchReplies.question, saveField: draft.watchReplies.saveField || undefined, thankYouMessage: draft.watchReplies.thankYouMessage || undefined, customers: Object.fromEntries(chosen.map((r: any) => [r.customerId, { name: r.name, status: "waiting" }])), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + days * 86400000).toISOString() };
+            const w = await (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "reply_watch", id: watchId, data: watch, deleted_at: null }, { onConflict: "owner_id,kind,id" }).select("id");
+            if (w?.error || !w?.data?.length) { console.warn("[Alfred] reply watch not saved:", w?.error?.message); watchId = null; }
+          }
           let sent = 0, failed = 0;
-          for (const c of capped) {
-            const personalized = String(inputs.message).replace(/\{\{first_name\}\}/g, c.firstName || "there");
+          for (const r of chosen) {
+            const personalized = String(draft.message).replace(/\{\{first_name\}\}/g, r.firstName || "there");
             try {
-              await twilioSend(settings, c.phone, personalized);
-              logOutboundSmsToInbox({ contactName: `${c.firstName || ""} ${c.lastName || ""}`.trim(), contactPhone: c.phone, customerId: c.id, body: personalized }).catch(() => {});
+              await twilioSend(settings, r.phone, personalized);
+              logOutboundSmsToInbox({ contactName: r.name, contactPhone: r.phone, customerId: r.customerId, body: personalized }).catch(() => {});
               sent++;
             } catch { failed++; }
-            await new Promise(r => setTimeout(r, 100));
+            await new Promise(res => setTimeout(res, 100));
+          }
+          if (ownerId) {
+            const campId = uid();
+            (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "campaigns", id: campId, data: { id: campId, name: draft.campaignName || String(draft.message).slice(0, 40), ch: "sms", body: draft.message, status: "sent", createdAt: new Date(draft.createdAt).toISOString(), sentAt: new Date().toISOString(), recipientCount: chosen.length, sentCount: sent, failedCount: failed, deliveryRate: chosen.length ? Math.round((sent / chosen.length) * 100) : 0, matches: chosen.map((r: any) => r.customerId), createdBy: "alfred" }, deleted_at: null }, { onConflict: "owner_id,kind,id" }).then(() => {}, () => {});
           }
           toast(`Alfred texted ${sent} customer${sent !== 1 ? "s" : ""}` + (failed ? ` (${failed} failed)` : "") + " ✓");
-          return { success: true, sent, failed, ...(eligible.length > capped.length ? { note: `Capped at 500 — ${eligible.length - capped.length} more eligible customers were not messaged this round.` } : {}) };
+          return { success: true, sent, failed, skipped: draft.recipients.length - chosen.length, watchingReplies: !!watchId };
         }
         case "switch_ai_model": {
           const wanted = String(inputs.provider || "").toLowerCase().trim();
@@ -4382,8 +4594,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const toolDefinitions = [
     {
       name: "search_customers",
-      description: "Search customers by name, email, or address. Use this to find a customer before referencing them.",
-      input_schema: { type: "object", properties: { query: { type: "string", description: "Search text (name, email, or address fragment)" } }, required: ["query"] }
+      description: "Search the WHOLE customer list for a person — handles partial/misspelled names, nicknames, sound-alikes, part of a phone number or email, street, city, company, tags, notes ('a Jon on Oak St', 'someone with a 0199 number'). Use it to find a customer, or answer 'do I have anyone like this'.",
+      input_schema: { type: "object", properties: { query: { type: "string", description: "Anything you know about them" } }, required: ["query"] }
+    },
+    {
+      name: "find_duplicate_customers",
+      description: "Scan the ENTIRE customer list for duplicates — same phone, same email, same name, nicknames (Bill/William), similar spellings (Smith/Smyth, Katherine/Catherine), same address. No names needed. Use for 'check my client base for duplicates'.",
+      input_schema: { type: "object", properties: { includePossible: { type: "boolean", description: "Also list weaker matches (similar spelling / same address). Default true." } } }
+    },
+    {
+      name: "customers_missing_info",
+      description: "Scan the ENTIRE customer list for missing details — which customers have no phone, email, address, last name, birthday or lead source. Use for 'who am I missing info for'.",
+      input_schema: { type: "object", properties: { fields: { type: "array", items: { type: "string", enum: ["phone", "email", "address", "lastName", "birthday", "leadSource"] }, description: "Default phone, email, address" } } }
+    },
+    {
+      name: "filter_customers",
+      description: "Find every customer matching a description across the whole CRM — 'customers in Hanover', 'VIPs who spent over $1,000', 'people I haven't serviced in a year', 'leads from Facebook', 'birthdays this month', 'anyone with pool in their notes'. Returns the count and the list.",
+      input_schema: { type: "object", properties: {
+        city: { type: "string" }, tag: { type: "string" }, leadSource: { type: "string" }, minSpent: { type: "number" }, maxSpent: { type: "number" },
+        noServiceInDays: { type: "number" }, servicedWithinDays: { type: "number" }, hasJobs: { type: "boolean" }, isLead: { type: "boolean" },
+        createdAfter: { type: "string" }, createdBefore: { type: "string" }, textContains: { type: "string" }, hasBirthdayThisMonth: { type: "boolean" }, optedOutOfTexts: { type: "boolean" },
+      } }
     },
     {
       name: "get_customer_documents",
@@ -4794,9 +5025,72 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       input_schema: { type: "object", properties: { phone: { type: "string", description: "The recipient's phone number, any format" }, message: { type: "string", description: "The exact SMS text to send" }, label: { type: "string", description: "Optional — a name/label for this contact, for the Inbox log" }, customerId: { type: "string", description: "Pass this whenever the recipient is a known/just-created CRM customer, so the Inbox thread links to their profile instead of being orphaned" } }, required: ["phone", "message"] }
     },
     {
+      name: "prepare_import",
+      description: "Read a big list of customers (and their jobs/schedules) for import — an attached spreadsheet/CSV or a long pasted list (both arrive as an import batch id), or text you pass directly. Handles hundreds or thousands of rows: tables are read column by column, free text is read in pieces. Matches existing customers (no duplicates) and workers to employees, works out each job's date, time, price, repeat schedule and number of cans. Saves NOTHING — returns a summary to show the owner. Use this instead of create_customer/schedule_job for more than a few records.",
+      input_schema: { type: "object", properties: {
+        batchId: { type: "string", description: "The import batch id from the attachment/paste note" },
+        text: { type: "string", description: "Only when there's no batch id: the list itself" },
+        serviceCategory: { type: "string", enum: ["trash_can", "general"], description: "Use general unless the business has a trash_can service line" },
+        createJobs: { type: "boolean", description: "Create jobs from the schedule/price info (default true). false = customers only" },
+        columnOverrides: { type: "object", description: "Only for tables, only if the summary shows a column read wrong: { \"Column header\": \"field\" } — fields: fullName firstName lastName phone email address city state zip notes gateCode company amount frequency weekday scheduledDate scheduledTime cans worker service __skip__" },
+      } }
+    },
+    {
+      name: "run_import",
+      description: "Save an import prepared with prepare_import — only after the owner has seen that summary and said yes in a later message. Creates/updates the customers and creates their jobs in batches.",
+      input_schema: { type: "object", properties: { planId: { type: "string", description: "From prepare_import; leave out to use the latest prepared import" } } }
+    },
+    {
+      name: "read_google_sheet",
+      description: "Open a Google Sheets link and keep its rows as an import batch (then prepare_import imports it). Works for sheets shared by link and for private sheets of the connected Google account. A link in the owner's message is usually opened already — look for the [Google Sheet …] note first.",
+      input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }
+    },
+    {
+      name: "read_pasted_text",
+      description: "Read a long pasted message in full, a page at a time (for a paste that ISN'T an import, e.g. an email to summarize).",
+      input_schema: { type: "object", properties: { batchId: { type: "string" }, page: { type: "number", description: "1-based, 8,000 characters per page" } }, required: ["batchId"] }
+    },
+    {
       name: "notify_all_customers",
-      description: "Text a message to many customers at once — everyone, or narrowed by tag. Automatically skips anyone who's opted out of texts. Use for broadcast announcements ('let everyone know I'm running late', a schedule change, a weather closure) and for blasting a promo/campaign message to the whole list. Supports {{first_name}} to personalize. This sends for real — get the exact wording confirmed first if the owner was vague about what it should say.",
-      input_schema: { type: "object", properties: { message: { type: "string", description: "Use {{first_name}} to personalize" }, tag: { type: "string", description: "Only customers with this exact tag — omit to mean everyone" } }, required: ["message"] }
+      description: "Step 1 of texting more than 2 customers (an announcement, a promo, a question to your list): DRAFTS it and returns the numbered recipient list — nothing is sent. Show the owner the list and ask which to send to, then wait for their reply and call send_bulk_text. Skips opted-out customers. Supports {{first_name}}. If the text asks customers something (birthday, email, address), pass watchReplies so their answers are saved to their files as they come in.",
+      input_schema: { type: "object", properties: {
+        message: { type: "string", description: "Use {{first_name}} to personalize" },
+        tag: { type: "string", description: "Only customers with this tag — omit to mean everyone" },
+        customerNames: { type: "array", items: { type: "string" }, description: "Only these customers" },
+        onlyMissing: { type: "string", enum: ["birthday", "email", "address"], description: "Only customers whose file doesn't have this yet" },
+        campaignName: { type: "string" },
+        watchReplies: { type: "object", properties: { question: { type: "string" }, saveField: { type: "string", enum: ["birthday", "email", "address", "notes", "company"] }, thankYouMessage: { type: "string" }, days: { type: "number" } } },
+      }, required: ["message"] }
+    },
+    {
+      name: "get_accountability_summary",
+      description: "The owner's personal accountability data from the Accountability page — daily check-ins (sleep, water, steps, workouts, mood, notes), streak, wins and personal checklist items that are due. Use for check-ins, the morning briefing, a weekly reflection, or when the owner asks how they're doing. Don't bring it up while they're working through business tasks.",
+      input_schema: { type: "object", properties: { days: { type: "number", description: "How many days back (default 7)" } } }
+    },
+    {
+      name: "check_connections",
+      description: "Health check of everything Alfred depends on — every AI model key, Twilio and its incoming-text webhook, Google, database tables, the reminders scheduler. Use for 'is everything connected', 'why aren't my texts working', 'check your API connections'. Report problems with their fixes.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "create_campaign",
+      description: "Create a campaign in the Campaigns page (draft, or scheduled with sendAt) without texting anyone now. To actually text people, use notify_all_customers (draft → owner approves → send_bulk_text).",
+      input_schema: { type: "object", properties: { name: { type: "string" }, channel: { type: "string", enum: ["sms", "email"] }, message: { type: "string" }, subject: { type: "string" }, tags: { type: "array", items: { type: "string" } }, sendAt: { type: "string", description: "ISO date/time" } }, required: ["name", "message"] }
+    },
+    {
+      name: "set_birthday_offer",
+      description: "Turn on/change/turn off the automatic birthday text: on each customer's birthday (from their file) they get their own coupon code for X% off, good for N days. Runs every morning on its own.",
+      input_schema: { type: "object", properties: { active: { type: "boolean" }, discountPercent: { type: "number" }, validDays: { type: "number" }, message: { type: "string", description: "Optional. {{first_name}}, {{code}}, {{percent}}, {{expires}} are filled in." } }, required: ["active"] }
+    },
+    {
+      name: "log_income",
+      description: "Add income (sales, deposits, payouts, cash jobs not in the CRM) to the Budget page — one or many entries, e.g. from a revenue report or bank statement the owner sent.",
+      input_schema: { type: "object", properties: { entries: { type: "array", items: { type: "object", properties: { date: { type: "string" }, description: { type: "string" }, amount: { type: "number" }, category: { type: "string" } }, required: ["amount"] } } }, required: ["entries"] }
+    },
+    {
+      name: "send_bulk_text",
+      description: "Step 2: send a notify_all_customers draft AFTER the owner replied to approve it — exclude = list numbers they said no to, only = the ones they said yes to. Refused if called in the same reply as the draft.",
+      input_schema: { type: "object", properties: { draftId: { type: "string" }, exclude: { type: "array", items: { type: "number" } }, only: { type: "array", items: { type: "number" } } }, required: ["draftId"] }
     },
     {
       name: "switch_ai_model",
@@ -4901,6 +5195,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const send = async (overrideText?: string, opts?: { skipVisibleMessage?: boolean }) => {
     const text = (overrideText ?? input).trim();
     if (!text) return;
+    if (!loading) { turnStartRef.current = Date.now(); directSendsRef.current = 0; }
     // BUG FIX (user report — "Alfred just sat there spinning and never
     // responded, no error") — this used to silently no-op while `loading`
     // was already true (e.g. a screenshot attachment's own vision-analysis
@@ -5124,8 +5419,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect.`;
       const toolHint = `\n\nFORMATTING: never use markdown — no asterisks for bold/italic (**text** or *text*), no # headers, no markdown bullet/numbered lists. This chat renders plain text only, so markdown symbols show up as literal stray characters like stray asterisks. Write in plain sentences; if you need to list things, use plain lines like "1) ..." or a line break between items, never *, **, -, or #.\n\nCASUAL CONVERSATION: the user can talk to you like a person, not just issue commands — small talk, a joke, venting, a random off-topic question. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. The RESPONSE STYLE/TASK RESULT REPORTING rules below govern how you report a TOOL ACTION's outcome specifically — they don't apply to ordinary conversation, and nothing about them means refusing to chat.\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true. NEVER quote a raw database/technical error verbatim (e.g. "could not find the table 'public.x' in the schema cache", a stack trace, a SQL error code) — that means nothing to a business owner. Translate it into one plain sentence about what's actually affected, or if it's from a side check unrelated to what they actually asked (e.g. a background history lookup during a scheduling request), just skip mentioning it and proceed with the real task — don't let it derail or clutter an otherwise-unrelated answer.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
-- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / send a broadcast or promo blast → USE notify_all_customers — this is a real send to real people, not a draft; confirm the exact wording first if the owner was vague.\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- A simple fact shared in passing ("my slow season is January," "I use Rain-X on windows") → USE remember_fact automatically, no need to confirm first. A STANDING INSTRUCTION about how you should behave going forward is different — see STANDING INSTRUCTIONS below, confirm those before saving.\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nBULK JOB IMPORT (screenshots or a big pasted block of job/customer data): the owner may hand you several jobs at once — a block of pasted text, or screenshots (these reach you already read: a numbered list of what was found, sent to you as a normal message). Treat every distinct job/order in it as its own create_customer + schedule_job pair — schedule_job's own employeeName param assigns the crew in the SAME call, so you don't need a separate assign_employee call per job. create_customer already reuses an existing customer by phone/name match instead of duplicating, so don't worry about exact duplicates. BEFORE calling any of these tools, scan the WHOLE batch for: (a) the same employee named on two or more jobs at the same or overlapping date/time, or (b) any job whose date, time, employee, or order details are genuinely unclear or contradictory. If either is true, create NOTHING yet — ask the owner ONE direct question naming exactly what's ambiguous (e.g. "Mike's on both the Oak St and Elm St jobs at 10am today — Oak first then Elm, or should one go to someone else?") and wait for their reply. BUG FIX (user report — "the response is confusing") — a confirmation question is its own self-contained message, not a continuation of an earlier one the owner has to scroll up to decode: never reference "the repeated Kyle and Josh entries" or "Steve's guessed 10:45 entry" without also saying, right there, WHO/WHAT that is and WHY it's being treated as a duplicate (e.g. "Alex Rivera and Sam Patel each appear twice with identical details — I'm treating the second copy of each as a duplicate, not a separate job" — one plain sentence per judgment call, not a dense jargon-packed clause). If you also checked something else first (e.g. whether jobs already exist on that date), report that as its own separate, complete sentence before the confirmation question — don't run the two together as if they're the same thought. Their next message is the answer — treat "go ahead"/"looks good"/"yes" as full confirmation to proceed exactly as extracted, and anything else (a name, a time, an order) as a correction to apply before re-checking for remaining conflicts. If the owner sends something UNRELATED while a batch confirmation is still pending (e.g. "also add this other customer for tomorrow"), answer that new request on its own — do not re-paste the entire pending batch/conflict summary again as if starting over; one short reminder line that it's still waiting ("still holding on that batch — need the info above to move on it") is enough. Repeating the full confirmation verbatim across several messages just because something else came up in between is confusing, not thorough. Once everything is confirmed, create every customer and job in the batch; when the owner confirms an order for one employee's day but didn't give exact times, space that employee's jobs by a sensible gap (e.g. 45-60 min, or the job's own duration if known) so their schedule/route in the field portal reflects the right order. Report back with ONE summary line — how many customers and jobs were created — not a play-by-play of each tool call.\n\nSTANDING INSTRUCTIONS ("from now on...", "always...", "never...", "don't ever...", "stop doing X", "ask me first before X", "you can handle X on your own now"): the owner can change how you behave going forward, not just ask for a one-off action. Recognize this phrasing and handle it in two steps — never save or change anything on the first message alone:
-1. Figure out what it actually maps to. A broad statement about how much you can do without checking in first ("always ask before you do anything," "just handle things yourself from now on," "don't text customers without asking me") is the STANDING AUTONOMY LEVEL → use set_autonomy_level (manage_everything/ask_first/hold_everything). A narrower, specific standing rule that isn't about your overall autonomy ("always give repeat customers 10% off," "never schedule jobs on Sundays," "don't offer add-ons unless they ask") → use remember_fact with category "preferences", worded as a rule you'll follow, not a diary entry. If they're describing a temporary absence ("I'm out next week"), that's set_vacation_mode instead, not a standing instruction.
+- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / any text to more than 2 customers → USE notify_all_customers, which only DRAFTS it: show the owner the numbered list and the sample, ask which to send to, and STOP. After they answer ("all", "not 3", "only 1 and 4"), USE send_bulk_text with their choices. Never send several separate texts to get around this. If the text asks customers a question (birthday, email…), pass watchReplies so answers are saved to their files automatically. Confirm the exact wording first if the owner was vague.\n- WHOLE-CRM QUESTIONS: you can always scan every customer at once — never tell the owner you can only check names they give you. Duplicates → find_duplicate_customers. "Do I have anyone like…" / a vague description → search_customers. "Who's missing info" → customers_missing_info. "Customers who / in / with …" → filter_customers. Report counts first, then the names.
+- PERSONAL VS. BUSINESS: when the owner is working through business tasks (jobs, customers, quotes, scheduling), stay on them — don't bring up sleep, workouts, mood or personal reminders. Accountability (get_accountability_summary) is for check-ins, the morning briefing, weekly reflections, or when they ask. Personal reminders ("remind me to call Mom Sunday at 6", "every weekday at 7 remind me to stretch") → USE set_followup_reminder like any other reminder.
+- Photos, screenshots or PDFs of receipts, bills, bank/card statements, revenue reports or tax paperwork → once you've read them, USE log_expense for each expense (one per receipt, one per statement line), log_income for money coming in, and remember_fact for tax figures (form, year, totals). Say what you imported with counts and totals.
+- "Create a campaign" → USE create_campaign (or notify_all_customers when they want it sent). "Every customer gets a coupon on their birthday" → USE set_birthday_offer; to collect birthdays first, notify_all_customers with onlyMissing "birthday" and watchReplies saveField "birthday".
+- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- A simple fact shared in passing ("my slow season is January," "I use Rain-X on windows") → USE remember_fact automatically, no need to confirm first. A STANDING INSTRUCTION about how you should behave going forward is different — see STANDING INSTRUCTIONS below, confirm those before saving.\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nBULK JOB IMPORT (screenshots or a big pasted block of job/customer data): the owner may hand you several jobs at once — a block of pasted text, or screenshots (these reach you already read: a numbered list of what was found, sent to you as a normal message). Treat every distinct job/order in it as its own create_customer + schedule_job pair — schedule_job's own employeeName param assigns the crew in the SAME call, so you don't need a separate assign_employee call per job. If the batch is trash/garbage can cleaning specifically (the owner says "trash cans", or the screenshots show a can-cleaning route), pass isTrashCan: true on every schedule_job call in the batch — otherwise these jobs won't show up in the owner's dedicated Trash Can Cleaning section, only as generic jobs. create_customer already reuses an existing customer by phone/name match instead of duplicating, so don't worry about exact duplicates. BEFORE calling any of these tools, scan the WHOLE batch for: (a) the same employee named on two or more jobs at the same or overlapping date/time, or (b) any job whose date, time, employee, or order details are genuinely unclear or contradictory. If either is true, create NOTHING yet — ask the owner ONE direct question naming exactly what's ambiguous (e.g. "Mike's on both the Oak St and Elm St jobs at 10am today — Oak first then Elm, or should one go to someone else?") and wait for their reply. BUG FIX (user report — "the response is confusing") — a confirmation question is its own self-contained message, not a continuation of an earlier one the owner has to scroll up to decode: never reference "the repeated Kyle and Josh entries" or "Steve's guessed 10:45 entry" without also saying, right there, WHO/WHAT that is and WHY it's being treated as a duplicate (e.g. "Kyle Hoffman and Josh Willits each appear twice with identical details — I'm treating the second copy of each as a duplicate, not a separate job" — one plain sentence per judgment call, not a dense jargon-packed clause). If you also checked something else first (e.g. whether jobs already exist on that date), report that as its own separate, complete sentence before the confirmation question — don't run the two together as if they're the same thought. Their next message is the answer — treat "go ahead"/"looks good"/"yes" as full confirmation to proceed exactly as extracted, and anything else (a name, a time, an order) as a correction to apply before re-checking for remaining conflicts. If the owner sends something UNRELATED while a batch confirmation is still pending (e.g. "also add this other customer for tomorrow"), answer that new request on its own — do not re-paste the entire pending batch/conflict summary again as if starting over; one short reminder line that it's still waiting ("still holding on the trash-can batch — need the info above to move on it") is enough. Repeating the full confirmation verbatim across several messages just because something else came up in between is confusing, not thorough. Once everything is confirmed, create every customer and job in the batch; when the owner confirms an order for one employee's day but didn't give exact times, space that employee's jobs by a sensible gap (e.g. 45-60 min, or the job's own duration if known) so their schedule/route in the field portal reflects the right order. Report back with ONE summary line — how many customers and jobs were created — not a play-by-play of each tool call.\n\nSTANDING INSTRUCTIONS ("from now on...", "always...", "never...", "don't ever...", "stop doing X", "ask me first before X", "you can handle X on your own now"): the owner can change how you behave going forward, not just ask for a one-off action. Recognize this phrasing and handle it in two steps — never save or change anything on the first message alone:
+1. Figure out what it actually maps to. A broad statement about how much you can do without checking in first ("always ask before you do anything," "just handle things yourself from now on," "don't text customers without asking me") is the STANDING AUTONOMY LEVEL → use set_autonomy_level (manage_everything/ask_first/hold_everything). A narrower, specific standing rule that isn't about your overall autonomy ("always give repeat customers 10% off," "never schedule jobs on Sundays," "don't offer the trash-can add-on unless they ask") → use remember_fact with category "preferences", worded as a rule you'll follow, not a diary entry. If they're describing a temporary absence ("I'm out next week"), that's set_vacation_mode instead, not a standing instruction.
 2. CONFIRM before committing — restate the rule in plain English as a direct yes/no question ("So from now on, you want me to always ask before texting a customer about a price change — is that right?") and wait for their reply. Treat "yes"/"correct"/"that's right"/a simple confirmation as the go-ahead to call the tool; treat anything else as a correction — fold it in and confirm again before saving. This applies even at high autonomy levels — a standing behavioral change is exactly the kind of thing worth one confirmation, autonomy level governs day-to-day ACTIONS, not rewriting your own standing rules.
 Once saved, a remembered preference or the current autonomy level is a BINDING constraint on every future turn, not background flavor text — actually check it before acting, especially before texting/emailing a customer, applying a discount, or scheduling something the rule speaks to. If a saved rule and the owner's current message conflict, the current message wins for this one action, but don't silently update the standing rule to match — ask if they want the rule itself changed too.
 
@@ -5258,7 +5557,10 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           let localConv = [...convMessages];
           let localFinal = "";
           const localTraces = [];
-          while (rounds < 5) {
+          // 12 rounds / 8k tokens / 60s: a message with 50 customers and
+          // their own instructions is dozens of tool calls (5 rounds × 1,500
+          // tokens used to stop partway through).
+          while (rounds < 12) {
             rounds++;
             // BUG FIX (user report) — "you literally still can't stop
             // Alfred from responding mid-conversation." abortController
@@ -5282,15 +5584,24 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
             // Wrapping it in withTimeout means a hung provider now correctly
             // fails over to the next model within 25s, same as every other
             // async action in this app already does per docs/ARCHITECTURE.md.
+            // Same budget as functions/api/call-model.ts: 45s for a normal
+            // message, more for a big one (a pasted client list), plus time
+            // for its NVIDIA/OpenRouter fallbacks — a flat 60s here cut off
+            // big imports the server was still waiting on.
+            const reqSystem = toolsForModel ? systemPrompt : noToolsPrompt;
+            const reqSize = reqSystem.length + JSON.stringify(localConv).length + JSON.stringify(toolsForModel || []).length;
+            const serverFirstMs = Math.min(110000, 45000 + Math.floor(reqSize / 1000) * 1000);
+            const provider = MODELS_MAP[mid]?.provider;
+            const clientTimeoutMs = serverFirstMs + (provider === "nvidia" ? 90000 : provider === "openrouter" ? 60000 : 15000);
             const result: any = await withTimeout<any>((callModel as any)({
               modelId: mid,
               apiKey: (settings.modelKeys || {})[mid],
-              systemPrompt: toolsForModel ? systemPrompt : noToolsPrompt,
+              systemPrompt: reqSystem,
               messages: localConv,
               tools: toolsForModel,
-              maxTokens: 1500,
+              maxTokens: Math.min(8192, MODELS_MAP[mid]?.maxTokens || 4096),
               signal: abortController.signal,
-            }), 25000, MODELS_MAP[mid]?.name || mid);
+            }), clientTimeoutMs, MODELS_MAP[mid]?.name || mid);
             console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
             // BUG FIX — a non-tool-capable model (e.g. OpenRouter's free
             // tier) has no `tools` param sent, but the system prompt still
@@ -5574,112 +5885,11 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       timestamp: Date.now(),
     } as any);
     setAttachAnalyzing(true);
-    // BUG FIX (user report) — "the stop button still does not work." The
-    // composer's Stop button only ever aborted currentAbortControllerRef,
-    // which was created inside send() — but screenshot/file analysis
-    // (this function) runs BEFORE send() and is the slowest, most likely
-    // part to get stuck. Claim the same shared ref here too, so Stop works
-    // during attachment analysis as well, not just the later tool-calling
-    // reply.
+    // The composer's Stop button aborts this too (it's the slowest part).
     const attachAbort = new AbortController();
     currentAbortControllerRef.current = attachAbort;
-    try {
-      if (attachments.length > 1) {
-        // FEATURE — "Alfred can receive screenshots... extract the
-        // information, assign employees, set the cost... ask clarifying
-        // questions." One vision call reads every screenshot and extracts
-        // a plain numbered list of every job it can find, handed to the
-        // NORMAL send()/tool-calling conversation as if the owner had
-        // typed it — see the BULK JOB IMPORT rules in the system prompt.
-        const imageFiles = attachments.filter(a => !a.isPdf);
-        const pdfFiles = attachments.filter(a => a.isPdf);
-        // BUG FIX (user report) — "attach photos, files, screenshots, etc.
-        // and write the message with them and send them all at once —
-        // that wasn't working." A multi-select mixing images with a PDF
-        // used to silently drop every PDF here (only imageFiles ever got
-        // analyzed) — the PDF just vanished with no analysis and no error.
-        // Each PDF now gets its own single-document read, merged with the
-        // screenshot findings into one combined message.
-        let combinedFindings = "";
-        // BUG FIX (user report) — "Screenshot analysis timed out" kept
-        // happening even after raising the timeout to 75s. Root cause was
-        // the request itself, not just the clock: ALL screenshots went into
-        // ONE call asking for an exhaustive multi-job extraction across
-        // every image at once — a genuinely large, slow request on a
-        // free/slower model, and any single stall failed the WHOLE batch.
-        // One call PER screenshot (same pattern the PDF loop below already
-        // uses) is far smaller and faster each time, so it's much less
-        // likely to hit any timeout, and one slow/failed screenshot no
-        // longer takes the others down with it. Cross-image duplicate/
-        // conflict checking still happens — the tool-calling model gets
-        // the full merged list below and the system prompt's BULK JOB
-        // IMPORT rules already require it to scan the WHOLE batch before
-        // creating anything.
-        let stoppedByUser = false;
-        for (let i = 0; i < imageFiles.length; i++) {
-          if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
-          const a = imageFiles[i];
-          setAttachProgressLabel(imageFiles.length > 1 ? `Analyzing screenshot ${i + 1} of ${imageFiles.length}…` : "Analyzing screenshot…");
-          try {
-            const result: any = await callVisionModel({
-              messages: [{
-                role: "user",
-                content: [
-                  { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } },
-                  { type: "text", text: `You are Alfred, business assistant for a service business. This screenshot may contain one or more job/order records — a text, a spreadsheet row, a scheduling app entry, a handwritten note, anything. Extract EVERY separate job/order visible in THIS image. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible, write "not given" rather than guessing. Number each job. Be thorough — do not skip any job visible in this image.` }
-                ]
-              }],
-              maxTokens: 1500,
-            }, 45000, `Screenshot ${i + 1} analysis`, { externalSignal: attachAbort.signal });
-            const extracted = (result.text || "").trim();
-            if (extracted) combinedFindings += `From screenshot ${i + 1} (${a.file.name}):\n${extracted}\n\n`;
-          } catch (e: any) {
-            if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
-            combinedFindings += `Couldn't analyze screenshot ${i + 1} (${a.file.name}) — ${e?.message || "unknown error"}.\n\n`;
-          }
-        }
-        for (const pdf of pdfFiles) {
-          if (stoppedByUser || attachAbort.signal.aborted) { stoppedByUser = true; break; }
-          setAttachProgressLabel(`Reading ${pdf.file.name}…`);
-          try {
-            const result: any = await callVisionModel({
-              messages: [{
-                role: "user",
-                content: [
-                  { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.base64 } },
-                  { type: "text", text: "You are Alfred, business assistant for a service business. Transcribe the FULL relevant content of this document clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be scheduled or acted on without re-reading the file." }
-                ]
-              }],
-              maxTokens: 1500,
-            }, 45000, "File analysis", { pdf: true, externalSignal: attachAbort.signal });
-            const reply = (result.text || "").trim();
-            if (reply) combinedFindings += `From the attached PDF "${pdf.file.name}":\n${reply}\n\n`;
-          } catch (e: any) {
-            if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
-            combinedFindings += `Couldn't analyze the attached PDF "${pdf.file.name}" — ${e?.message || "unknown error"}.\n\n`;
-          }
-        }
-        if (stoppedByUser) {
-          appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
-          return;
-        }
-        if (!combinedFindings.trim()) {
-          appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any usable info in those attachments.", timestamp: Date.now() });
-          return;
-        }
-        setAttachProgressLabel("Figuring out what to do with it…");
-        await send(`Here's what I found in what I just attached:\n\n${combinedFindings.trim()}\n\nThese may be new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`, { skipVisibleMessage: true });
-        return;
-      }
-
-      const a = attachments[0];
-      const isPdf = a.isPdf;
-      setAttachProgressLabel(isPdf ? `Reading ${a.file.name}…` : "Analyzing " + a.file.name + "…");
-      // FEATURE — upload to the SAME public bucket customer documents
-      // already live in (DocumentVault.tsx), so a later "attach this to
-      // [client]" can actually save it — fire-and-forget alongside the
-      // vision analysis below; if it fails, attach_file_to_customer will
-      // just report no file is available rather than blocking the chat.
+    // Every file is also saved, so "attach this to <client>" can file it.
+    for (const a of attachments) {
       (async () => {
         try {
           const path = `_alfred-inbound/${ownerId}/${uid()}-${a.file.name}`;
@@ -5689,47 +5899,67 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           if (pub?.publicUrl) lastAttachedFileRef.current = { url: pub.publicUrl, fileName: a.file.name };
         } catch (e: any) { console.warn("[Alfred] file upload threw:", e?.message); }
       })();
-      const result: any = await callVisionModel({
-        messages: [{
-          role: "user",
-          content: [
-            isPdf
-              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.base64 } }
-              : { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } },
-            { type: "text", text: "You are Alfred, business assistant for a service business. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If it's a work order, job order, contract, or any other document with real content (a commercial customer's order, scope of work, instructions, etc.): transcribe the FULL relevant content clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be summarized or acted on later without re-reading the file. Do not just describe it briefly in this case; the owner may ask you to schedule or assign work from it." }
-          ]
-        }],
-        maxTokens: 1500,
-      }, 45000, "File analysis", { pdf: isPdf, externalSignal: attachAbort.signal });
-      const reply = result.text || "Could not analyze the file.";
-      const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
-      if (parts) {
-        const [, vendor, date, amountStr, category] = parts;
-        const amount = Number(amountStr.replace(/,/g, ""));
-        appendMessage({
-          id: uid(), role: "alfred",
-          content: `📋 Receipt detected: ${vendor.trim()} · $${amount} · ${category.trim().toLowerCase()}${date.trim() ? " · " + date.trim() : ""}`,
-          timestamp: Date.now(),
-          pendingExpense: { vendor: vendor.trim(), date: date.trim(), amount, category: category.trim().toLowerCase(), receiptDataUrl: isPdf ? undefined : a.dataUrl },
-        } as any);
-      } else {
-        recentFileContextRef.current = { fileName: a.file.name, extractedText: reply, attachedAt: Date.now(), turnsUsed: 0 };
-        // BUG FIX — a typed caption alongside a single attachment never had
-        // anywhere to go before (the vision call fired before Send even
-        // existed as a concept) — thread it into the tool-calling
-        // conversation same as the bulk-import path already does, instead
-        // of silently dropping it.
-        if (caption) {
-          await send(`${reply}\n\n(The above is what I just found in the file I attached.) ${caption}`, { skipVisibleMessage: true });
-        } else {
-          appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
+    }
+    try {
+      // BUG FIX (user report — files and PDF sheets sent to Alfred should be
+      // recognized and acted on). Each file is read in full and classified
+      // (lib/attachmentReader.ts), then routed: lists go to the import
+      // tools, receipts become a ready-to-log expense, and everything else
+      // reaches Alfred with a plain instruction to act on it.
+      const notes: string[] = [];
+      const receipts: any[] = [];
+      let stopped = false;
+      for (let i = 0; i < attachments.length; i++) {
+        if (attachAbort.signal.aborted) { stopped = true; break; }
+        const a = attachments[i];
+        const label = attachments.length > 1 ? ` (${i + 1} of ${attachments.length})` : "";
+        setAttachProgressLabel(`Reading ${a.file.name}${label}…`);
+        const block = a.isPdf
+          ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.base64 } }
+          : { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } };
+        const ask = async (prompt: string) => {
+          const r: any = await callVisionModel({ messages: [{ role: "user", content: [block, { type: "text", text: prompt }] }], maxTokens: 8000 }, 120000, `Reading ${a.file.name}`, { pdf: a.isPdf, externalSignal: attachAbort.signal });
+          return String(r?.text || "");
+        };
+        try {
+          const read = await readAttachmentFully(ask, "service", { onRound: n => setAttachProgressLabel(`Reading ${a.file.name}${label} — part ${n}…`) });
+          const { header, body } = read;
+          const r = header.receipt;
+          if (header.kind === "receipt" && r && Number(r.total)) {
+            receipts.push({ vendor: String(r.vendor || "").trim() || a.file.name, date: String(r.date || "").trim(), amount: Number(r.total), category: String(r.category || "other").toLowerCase(), receiptDataUrl: a.isPdf ? undefined : a.dataUrl });
+            notes.push(`"${a.file.name}" is a receipt: ${r.vendor || "?"}, $${r.total}, ${r.date || "no date"} — shown to the owner with a Log expense button.`);
+            continue;
+          }
+          if (LIST_KINDS.includes(header.kind) && body.trim()) {
+            const id = "B-" + uid().slice(0, 8);
+            importBatchesRef.current.set(id, { id, kind: "text", name: a.file.name, text: body, createdAt: Date.now() });
+            const rows = Math.max(0, body.split("\n").filter(l => l.trim()).length - 1);
+            notes.push(`"${a.file.name}" is ${KIND_LABEL[header.kind]}${header.title ? ` (${header.title})` : ""} — ${rows} rows read${read.complete ? "" : " (the file was very long; some rows at the end may be missing — say so)"}. Saved as import batch ${id}: call prepare_import with batchId "${id}"${header.kind === "client_list" ? "" : " (it has schedule/job info)"}.`);
+            continue;
+          }
+          recentFileContextRef.current = { fileName: a.file.name, extractedText: body, attachedAt: Date.now(), turnsUsed: 0 };
+          notes.push(`"${a.file.name}" is ${KIND_LABEL[header.kind] || "a document"}${header.title ? ` (${header.title})` : ""}. Its content:\n${body.length > 12000 ? body.slice(0, 12000) + "\n…(cut — ask the owner if you need the rest)" : body}`);
+        } catch (e: any) {
+          if (attachAbort.signal.aborted) { stopped = true; break; }
+          notes.push(`Couldn't read "${a.file.name}" — ${e?.message || "unknown error"}.`);
         }
       }
+      if (stopped) { appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() }); return; }
+      for (const pe of receipts) {
+        appendMessage({ id: uid(), role: "alfred", content: `📋 Receipt detected: ${pe.vendor} · $${pe.amount} · ${pe.category}${pe.date ? " · " + pe.date : ""}`, timestamp: Date.now(), pendingExpense: pe } as any);
+      }
+      // Only receipts and nothing asked: the Log expense card is the answer.
+      if (receipts.length === attachments.length && !caption) return;
+      setAttachProgressLabel("Working out what to do with it…");
+      const what = caption
+        ? `I also said: "${caption}" — do that.`
+        : "I didn't say what I want — work out the most likely thing and do it: a client or job list → prepare_import (then show me the summary); a bill or statement → log each expense; an invoice or quote → match it to the customer and record it; a photo of a property or job → say what you see and ask which customer/job it belongs to. Ask one short question only if it's genuinely unclear.";
+      await send(`I attached ${attachments.length === 1 ? "a file" : attachments.length + " files"}.\n\n${notes.join("\n\n")}\n\n${what}`, { skipVisibleMessage: true });
     } catch (err: any) {
       if (attachAbort.signal.aborted) {
         appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
       } else {
-        appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze " + (attachments.length > 1 ? "those screenshots" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
+        appendMessage({ id: uid(), role: "alfred", content: "Couldn't read " + (attachments.length > 1 ? "those files" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
       }
     } finally {
       if (currentAbortControllerRef.current === attachAbort) currentAbortControllerRef.current = null;
@@ -5741,16 +5971,68 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
   // Composer's real entry point — routes to the attachment pipeline above
   // when something's staged, otherwise the plain text send(). Used by the
   // Send button, Enter key, suggested-prompt chips, and voice auto-send.
+  // BUG FIX (user report — a huge trash-can client list "Alfred couldn't
+  // handle"). Spreadsheets/CSVs and long pasted lists are kept in
+  // importBatchesRef and the model gets a short note with a preview and the
+  // batch id, instead of the whole list (which timed out the model and was
+  // too long for it to copy back out). prepare_import reads the full batch.
+  const LONG_PASTE_CHARS = 4000;
+  const stashLongPaste = (text: string): string => {
+    const lines = text.split(/\r?\n/).filter(l => l.trim()).length;
+    if (text.length < LONG_PASTE_CHARS || lines < 10) return text;
+    const id = "B-" + uid().slice(0, 8);
+    importBatchesRef.current.set(id, { id, kind: "text", name: "pasted text", text, createdAt: Date.now() });
+    return `${text.slice(0, 1500)}\n…\n\n[Pasted text: ${lines} lines, ${text.length.toLocaleString()} characters — only the start is shown above. Saved as import batch ${id}. If it's customers/jobs to import, call prepare_import with batchId "${id}". To read all of it for anything else, call read_pasted_text.]`;
+  };
+  const isTableFile = (f: File) => /\.(csv|tsv|txt|xlsx|xlsm|vcf|vcard|json)$/i.test(f.name) || /csv|spreadsheet|excel|vcard|json|text\/plain/i.test(f.type);
+  const stashTableFiles = async (files: File[]): Promise<string[]> => {
+    const notes: string[] = [];
+    for (const f of files) {
+      try {
+        const rows = await readImportFile(f);
+        const head = rows[0] || [];
+        const id = "B-" + uid().slice(0, 8);
+        importBatchesRef.current.set(id, { id, kind: "table", name: f.name, headers: head.map((h, i) => h || `Column ${i + 1}`), data: rows.slice(1), createdAt: Date.now() });
+        notes.push(`[Attached file "${f.name}": ${Math.max(0, rows.length - 1)} rows. Columns: ${head.join(" | ")}. First rows: ${rows.slice(1, 3).map(r => r.join(" | ")).join(" // ")}. Saved as import batch ${id} — call prepare_import with batchId "${id}" to import it.]`);
+      } catch (e: any) {
+        notes.push(`[Attached file "${f.name}" couldn't be read: ${e?.message || "unknown error"}]`);
+      }
+    }
+    return notes;
+  };
+  const stashGoogleSheet = async (url: string): Promise<string> => {
+    try {
+      const rows = await fetchGoogleSheetRows(url);
+      const head = rows[0] || [];
+      const id = "B-" + uid().slice(0, 8);
+      importBatchesRef.current.set(id, { id, kind: "table", name: "Google Sheet", headers: head.map((h, i) => h || `Column ${i + 1}`), data: rows.slice(1), createdAt: Date.now() });
+      return `[Google Sheet ${url}: ${Math.max(0, rows.length - 1)} rows. Columns: ${head.join(" | ")}. First rows: ${rows.slice(1, 3).map(r => r.join(" | ")).join(" // ")}. Saved as import batch ${id} — call prepare_import with batchId "${id}" to import it, or read_pasted_text to read it.]`;
+    } catch (e: any) {
+      return `[Google Sheet ${url} couldn't be opened: ${e?.message || "unknown error"} — tell the owner exactly that.]`;
+    }
+  };
+  const withSheetNotes = async (text: string): Promise<string> => {
+    const urls = Array.from(new Set((text.match(new RegExp(GOOGLE_SHEET_URL.source, "gi")) || []))).slice(0, 3);
+    if (!urls.length) return text;
+    setAttachProgressLabel("Opening the Google Sheet…");
+    try { return [text, ...(await Promise.all(urls.map(stashGoogleSheet)))].join("\n\n"); } finally { setAttachProgressLabel(""); }
+  };
   const sendMessage = async (overrideText?: string) => {
+    const raw = (overrideText ?? input);
     if (pendingAttachments.length > 0) {
       const attachments = pendingAttachments;
-      const caption = (overrideText ?? input).trim();
+      const tables = attachments.filter(a => isTableFile(a.file));
+      const media = attachments.filter(a => !isTableFile(a.file));
       setPendingAttachments([]);
       setInput("");
       setShowSlash(false);
-      await sendWithAttachments(caption, attachments);
+      const notes = tables.length ? await stashTableFiles(tables.map(a => a.file)) : [];
+      const caption = [await withSheetNotes(stashLongPaste(raw.trim())), ...notes].filter(Boolean).join("\n\n");
+      if (media.length) await sendWithAttachments(caption, media);
+      else await send(caption || "Import this list.");
     } else {
-      await send(overrideText);
+      const text = await withSheetNotes(stashLongPaste(raw));
+      await send(text === raw ? overrideText : text);
     }
   };
   useEffect(() => { sendMessageRef.current = sendMessage; }); // no deps — always the latest, see sendMessageRef's comment
@@ -5802,8 +6084,40 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     setVoiceManualText("");
     setVoiceTextOpen(false);
   };
+  // Voice Mode without the browser's recognizer (lib/voiceCapture.ts): the
+  // mic is recorded until the owner stops talking, the server turns it into
+  // text, and that's the turn. Same state machine as the recognizer path.
+  const serverVoiceFailsRef = useRef(0);
+  const startServerListeningTurn = () => {
+    setVoiceModeState("listening");
+    setVoiceModeTranscript("");
+    voiceModeTranscriptRef.current = "";
+    let dropped = false;
+    const h = recordVoice({ stopOnSilence: true, silenceMs: 1300, waitForSpeechMs: 20000, maxMs: 90000, onSpeechStart: () => setVoiceModeTranscript("…") });
+    voiceModeRecognitionRef.current = { stop: () => { dropped = true; h.cancel(); } };
+    h.result.then(async blob => {
+      if (dropped || !voiceModeKeepGoingRef.current || voiceMutedRef.current) return;
+      if (!blob) { startVoiceListeningTurn(); return; } // nobody spoke — keep listening
+      setVoiceModeTranscript("Turning that into text…");
+      try {
+        const text = await transcribeAudio(blob);
+        if (dropped || !voiceModeKeepGoingRef.current) return;
+        serverVoiceFailsRef.current = 0;
+        if (!text) { startVoiceListeningTurn(); return; }
+        voiceModeTranscriptRef.current = text;
+        setVoiceModeTranscript(text);
+        processVoiceTurn(text);
+      } catch (e: any) {
+        serverVoiceFailsRef.current++;
+        if (serverVoiceFailsRef.current >= 3) { toast("Voice isn't working: " + (e?.message || "transcription failed") + " — check Settings → AI Models → Check connections.", "red"); closeVoiceMode(); return; }
+        toast("Didn't catch that — " + (e?.message || "try again"), "yellow");
+        setTimeout(() => { if (voiceModeKeepGoingRef.current) startVoiceListeningTurn(); }, 1200);
+      }
+    }).catch((e: any) => { toast(e?.message || "Couldn't use the microphone", "red"); closeVoiceMode(); });
+  };
   const startVoiceListeningTurn = () => {
-    if (!voiceModeKeepGoingRef.current || !VoiceRecognitionCtor || voiceMutedRef.current) return;
+    if (!voiceModeKeepGoingRef.current || voiceMutedRef.current) return;
+    if (!browserRecognizerUsable()) { if (canRecordAudio()) startServerListeningTurn(); return; }
     setVoiceModeState("listening");
     setVoiceModeTranscript("");
     voiceModeTranscriptRef.current = "";
@@ -5820,10 +6134,15 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     };
     rec.onerror = (e: any) => {
       if (e.error === "no-speech") return; // onend fires right after — handled there
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      if (e.error === "not-allowed") {
         toast("Microphone access denied — Voice Mode needs it to listen.", "red");
         closeVoiceMode();
+        return;
       }
+      // The browser's recognizer can't work here — it used to restart forever
+      // hearing nothing. onend (right after this) restarts the turn, which now
+      // records and transcribes on the server instead.
+      if (RECOGNIZER_FATAL.has(e.error)) markBrowserRecognizerBroken(e.error);
       // Other transient errors (network/aborted): onend still fires below and restarts the turn.
     };
     rec.onend = () => {
@@ -5897,7 +6216,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     }
   };
   const startInterruptListener = (speakingText: string) => {
-    if (!VoiceRecognitionCtor || voiceMutedRef.current) return;
+    if (!VoiceRecognitionCtor || !browserRecognizerUsable() || voiceMutedRef.current) return;
     const listenerTurnId = voiceTurnIdRef.current;
     const spokenWords = new Set(normalizeWords(speakingText));
     const looksLikeEcho = (said: string): boolean => {
@@ -6035,7 +6354,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     onSpotlight?.(step);
   };
   const openVoiceMode = () => {
-    if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
+    if (!browserRecognizerUsable() && !canRecordAudio()) { toast("This browser can't use the microphone — update it, or try Chrome, Edge or Safari.", "red"); return; }
     // BUG FIX — "don't make it a new conversation each call. It should be
     // one sandbox conversation inside the call, so it slowly grows, learns,
     // and gets more memory." Every voice call now switches into the SAME
@@ -6542,7 +6861,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
               <div className="flex flex-wrap gap-2 mb-2 px-0.5">
                 {pendingAttachments.map(a => (
                   <div key={a.id} className="relative flex-shrink-0">
-                    {a.isPdf ? (
+                    {a.isPdf || !a.mediaType.startsWith("image/") ? (
                       <div className="w-14 h-14 rounded-lg border border-brand-900/40 bg-black/60 flex flex-col items-center justify-center gap-0.5 px-1 overflow-hidden">
                         <FileText size={16} className="text-brand-400 flex-shrink-0" />
                         <span className="text-[8px] text-white/50 truncate w-full text-center">{a.file.name}</span>
@@ -6618,6 +6937,22 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                           }}
                         />
                       </label>
+                      <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-brand-950/40 cursor-pointer border-b border-white/10">
+                        <FileText size={14} className="text-brand-400" />
+                        Spreadsheet or list (import)
+                        <input
+                          type="file"
+                          accept=".csv,.tsv,.txt,.xlsx,.xlsm,.vcf,.json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                          multiple
+                          className="hidden"
+                          onChange={async e => {
+                            setAttachMenuOpen(false);
+                            const files = Array.from(e.target.files || []);
+                            e.target.value = "";
+                            await stageFiles(files);
+                          }}
+                        />
+                      </label>
                       <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-brand-950/40 cursor-pointer">
                         <FileText size={14} className="text-brand-400" />
                         Document (PDF)
@@ -6642,7 +6977,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                     </div>
                   </>
                 )}
-                <input ref={mainAttachInputRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={async e => {
+                <input ref={mainAttachInputRef} type="file" accept="image/*,application/pdf,.csv,.tsv,.txt,.xlsx,.xlsm,.vcf,.json" multiple className="hidden" onChange={async e => {
                   const filesList = Array.from(e.target.files || []);
                   e.target.value = "";
                   // BUG FIX (user report) — "it still sends the file...
@@ -6665,11 +7000,23 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                   Dictate/Voice Note are dense VoiceMicButton rows wired for
                   press-and-hold (holdToRecord) instead of click-to-toggle. */}
               <div className="relative flex-shrink-0">
+                {voiceTool ? (
+                  <div className={voiceTool === "note" ? "absolute bottom-full mb-2 left-0 z-30" : ""}>
+                    <VoiceMicButton
+                      key={voiceTool}
+                      mode={voiceTool}
+                      autoStart
+                      onDone={() => setVoiceTool(null)}
+                      onTranscript={(text, autoSend) => { if (autoSend) sendMessage(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
+                      apiKey={settings?.openAiKey || settings?.openaiKey || ""}
+                    />
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setVoiceMenuOpen(o => !o)}
                   title="Voice options"
-                  className="relative flex-shrink-0 p-2.5 rounded-xl bg-brand-600 text-brand-fg hover:scale-105 transition flex items-center justify-center"
+                  className={"relative flex-shrink-0 p-2.5 rounded-xl bg-gradient-to-br from-brand-600 to-brand-800 text-white hover:scale-105 transition flex items-center justify-center " + (voiceTool === "dictate" ? "hidden" : "")}
                 >
                   <Mic size={16} />
                 </button>
@@ -6685,24 +7032,12 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                         <span className="flex-1">Voice Mode</span>
                         <span className="text-[9px] text-white/30 flex-shrink-0">HANDS-FREE</span>
                       </button>
-                      <VoiceMicButton
-                        mode="dictate"
-                        dense
-                        holdToRecord
-                        label="Dictate (STT)"
-                        onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) sendMessage(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
-                        apiKey={settings?.openAiKey || settings?.openaiKey || ""}
-                      />
-                      <div className="border-t border-brand-900/20">
-                        <VoiceMicButton
-                          mode="note"
-                          dense
-                          holdToRecord
-                          label="Voice Note"
-                          onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) sendMessage(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
-                          apiKey={settings?.openAiKey || settings?.openaiKey || ""}
-                        />
-                      </div>
+                      <button onClick={() => { setVoiceMenuOpen(false); setVoiceTool("note"); }} className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-brand-950/40 transition text-left border-b border-brand-900/20">
+                        <Mic size={14} className="text-danger-400 flex-shrink-0" /><span className="flex-1">Voice Note</span><span className="text-[9px] text-white/30 flex-shrink-0">TAP TO STOP</span>
+                      </button>
+                      <button onClick={() => { setVoiceMenuOpen(false); setVoiceTool("dictate"); }} className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-brand-950/40 transition text-left">
+                        <Mic size={14} className="text-danger-400 flex-shrink-0" /><span className="flex-1">Dictate (type by voice)</span>
+                      </button>
                     </div>
                   </>
                 )}

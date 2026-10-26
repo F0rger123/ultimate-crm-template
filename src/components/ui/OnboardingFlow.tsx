@@ -5,7 +5,7 @@ import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
 import { GTxt } from "./GTxt";
 import { uid, today, fmt } from "../../lib/utils";
-import { parseDelimited, splitHeader, autoMapColumns, applyMapping, rowToCustomer, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE } from "../../lib/customerImport";
+import { parseDelimited, splitHeader, autoMapColumns, applyMapping, sniffColumns, rowToCustomer, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE } from "../../lib/customerImport";
 import { CUSTOMER_LIMIT } from "../../lib/planLimits";
 import type { AppSettings, Customer, Service } from "../../types";
 
@@ -17,8 +17,8 @@ const COMMON_SERVICES = ["Standard Service", "Repair", "Installation", "Maintena
 function parseCustomerCsv(text: string): Partial<Customer>[] {
   const parsed = splitHeader(parseDelimited(text));
   if (!parsed) return [];
-  const mapping = autoMapColumns(parsed.headers, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE);
-  return applyMapping(parsed.headers, parsed.data, mapping).map(rowToCustomer).filter(Boolean).slice(0, CUSTOMER_LIMIT) as Partial<Customer>[];
+  const mapping = sniffColumns(parsed.headers, parsed.data, autoMapColumns(parsed.headers, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE), CUSTOMER_FIELD_MAP);
+  return applyMapping(parsed.headers, parsed.data, mapping).map(r => rowToCustomer(r)).filter(Boolean).slice(0, CUSTOMER_LIMIT) as Partial<Customer>[];
 }
 
 export function OnboardingFlow({

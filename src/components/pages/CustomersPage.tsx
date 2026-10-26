@@ -32,8 +32,11 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { ImportDataModal } from "../ui/ImportDataModal";
+import { deleteByIds } from "../../lib/dbBulk";
 import { CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_LABELS, CUSTOMER_FIELD_EXCLUDE, rowToCustomer, mergeImportedCustomers, saveCustomersTolerant } from "../../lib/customerImport";
 import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
+import { PortalInvitesModal } from "../ui/PortalInvitesModal";
+import { getPortalInvites, sendPortalInvites } from "../../lib/portalInvites";
 import { GBtn } from "../ui/GBtn";
 import { useConfirm } from "../ui/ConfirmModal";
 import { UpgradePrompt } from "../ui/UpgradePrompt";
@@ -335,11 +338,12 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     setCustomers(customers.filter(c => !ids.includes(c.id)));
     markRecentlyDeleted("customers", ids);
     setBulkSelected([]);
-    (supabase as any).from("customers").delete().in("id", ids).select("id")
-      .then((r: any) => {
-        if (r?.error) { toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
-        const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
-        if (deletedCount < ids.length) { toast(`Deleted locally, but only ${deletedCount}/${ids.length} confirmed on the server — some may reappear. Try again or refresh to check.`, "red"); return; }
+    // In batches of 100 — one request with every id (a thousand customers)
+    // was too long for the server, failed, and they all came back.
+    if (ids.length > 200) toast(`Deleting ${ids.length} customers…`);
+    deleteByIds("customers", ids)
+      .then(r => {
+        if (r.failed) { toast(`Deleted ${r.deleted.length} of ${ids.length} on the server${r.error ? " — " + r.error : ""}. The rest may reappear — try deleting them again.`, "red"); return; }
         toast(ids.length + " customer(s) deleted");
       })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
@@ -371,8 +375,17 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     // column and save the rest.
     saveCustomersTolerant([record])
       .then(r => {
-        if (r.failed) { console.error("[CustomersPage] save failed:", r.error); toast("Saved locally, but failed to sync — " + r.error, "red"); }
-        else toast("Customer saved ✓", "green");
+        if (r.failed) { console.error("[CustomersPage] save failed:", r.error); toast("Saved locally, but failed to sync — " + r.error, "red"); return; }
+        toast("Customer saved ✓", "green");
+        // New customer → send their customer-portal link (Customers →
+        // Portal invites turns this off). Only for customers added one at a
+        // time here, never imports or leads.
+        if (isNew && (settings as any)?.autoPortalInvite !== false && record.pipelineStage !== "lead" && (record.phone || record.email)) {
+          getPortalInvites([record.id])
+            .then(inv => sendPortalInvites(settings, inv))
+            .then(res => { if (res.sent) toast(`Portal invite sent to ${record.firstName || "the customer"} ✓`, "green"); else if (res.failed) toast("Couldn't send the portal invite — " + (res.errors[0] || "unknown error"), "red"); })
+            .catch((e: any) => toast("Couldn't create the portal invite — " + (e?.message || "unknown error"), "red"));
+        }
       })
       .catch((e: any) => { console.error("[CustomersPage] save threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
@@ -476,16 +489,24 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   // customer limit.
   const [importOpen, setImportOpen] = useState<false | "file" | "sheets">(false);
   const [stripeImportOpen, setStripeImportOpen] = useState(false);
+  const [portalInvitesOpen, setPortalInvitesOpen] = useState(false);
+  // Imports land as customers unless the owner picks otherwise on the review
+  // screen — see rowToCustomer's comment for the bug this prevents.
+  const [importAs, setImportAs] = useState<"customers" | "leads" | "status">("customers");
   const handleCustomerImport = async (rows: Record<string, string>[]) => {
-    const incoming = rows.map(rowToCustomer).filter(Boolean) as any[];
+    const incoming = rows.map(r => rowToCustomer(r, { leadsFromStatus: importAs === "status" })).filter(Boolean) as any[];
     if (incoming.length === 0) throw new Error("no rows had a name, company, email or phone");
+    if (importAs === "leads") incoming.forEach(c => { c.pipelineStage = "lead"; });
     const limit = planLimits?.customers ?? null;
     const { next, added, updated, skippedOverLimit } = mergeImportedCustomers(customers, incoming, limit);
     setCustomers(next);
     const result = await saveCustomersTolerant([...added, ...updated]);
     if (result.droppedColumns.length) console.warn("[Import] saved without columns the database doesn't have yet:", result.droppedColumns.join(", "));
     if (result.failed) throw new Error(`${result.failed} customer(s) didn't save to the server — ${result.error}`);
-    return `Imported ${added.length} new customer${added.length !== 1 ? "s" : ""}` +
+    const leadCount = added.filter(c => c.pipelineStage === "lead").length;
+    setImportAs("customers");
+    return `Imported ${added.length} new ${importAs === "leads" ? "lead" : "customer"}${added.length !== 1 ? "s" : ""}` +
+      (importAs === "status" && leadCount ? ` (${leadCount} as leads)` : "") +
       (updated.length ? ` · updated ${updated.length} existing` : "") +
       (skippedOverLimit ? ` · ${skippedOverLimit} skipped (${limit} customer limit)` : "") + " ✓";
   };
@@ -562,6 +583,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setImportOpen("sheets")}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
             <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setStripeImportOpen(true)}><CreditCard size={14} className="inline mr-1.5" />Import from Stripe</GBtn>
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
+            <GBtn variant="ghost" onClick={() => setPortalInvitesOpen(true)}><Send size={14} className="inline mr-1.5" />Portal invites</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
             <GBtn onClick={openAddCustomer} data-tour="new-customer-btn"><Plus size={14} className="inline mr-1.5" />Add</GBtn>
@@ -880,7 +902,26 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
       <ImportDataModal open={!!importOpen} initialTab={importOpen || "file"} onClose={() => setImportOpen(false)} title="Import Customers" fieldMap={CUSTOMER_FIELD_MAP} fieldLabels={CUSTOMER_FIELD_LABELS} fieldExclude={CUSTOMER_FIELD_EXCLUDE} onImport={handleCustomerImport} toast={toast}
+        reviewExtras={(rows) => {
+          const statusLeads = rows.filter(r => rowToCustomer(r, { leadsFromStatus: true })?.pipelineStage === "lead").length;
+          return (
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
+              <div className="text-xs font-semibold">Import these as</div>
+              <div className="flex flex-wrap gap-1.5">
+                {([["customers", "Customers"], ["leads", "Leads (Lead Intake)"], ["status", "Use the Status column"]] as const).map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setImportAs(k)} className={"px-3 py-1.5 rounded-lg text-xs border transition " + (importAs === k ? "bg-brand-700/40 border-brand-600/60 text-white" : "border-white/10 text-white/60 hover:text-white")}>{l}</button>
+                ))}
+              </div>
+              <div className="text-[11px] text-white/45">
+                {importAs === "customers" ? "Everyone goes into Customers. Nobody is put in Lead Intake."
+                  : importAs === "leads" ? "Everyone new goes into Lead Intake. Existing customers that match stay customers."
+                  : `${statusLeads} row(s) have a Status of Lead / Prospect and go to Lead Intake; the rest are customers.`}
+              </div>
+            </div>
+          );
+        }}
         note={"Matching customers (same email, phone, or name) get their missing details filled in instead of being duplicated." + (planLimits?.customers != null ? ` Limit: ${planLimits.customers.toLocaleString()} customers (you have ${customers.length.toLocaleString()}).` : "")} />
+      <PortalInvitesModal open={portalInvitesOpen} onClose={() => setPortalInvitesOpen(false)} customers={customers} settings={settings} setSettings={setSettings} toast={toast} />
       <ImportStripeCustomersModal open={stripeImportOpen} onClose={() => setStripeImportOpen(false)} customers={customers} setCustomers={setCustomers} toast={toast} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} onOpenEstimate={(estId: string, label?: string) => {
         setDetail(null);

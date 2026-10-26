@@ -75,7 +75,7 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMaintenance, toast }) {
+export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMaintenance, toast, employees = [] as any[] }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [maintId, setMaintId] = useState(null);
   const [logMiles, setLogMiles] = useState(null); // vehicle id for quick mileage log
@@ -92,6 +92,17 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
     setModal({ open: false, data: null });
     toast("Vehicle saved");
   };
+  // Vehicles sync through owner_records (useCloudCollection), so removing it
+  // here removes it everywhere.
+  const removeVehicle = (v: any) => {
+    if (!window.confirm(`Delete ${v.name || "this vehicle"}? Its service history is deleted too.`)) return;
+    setVehicles(vehicles.filter(x => x.id !== v.id));
+    setMaintenance(maintenance.filter(m => m.vehicleId !== v.id));
+    toast("Vehicle deleted");
+  };
+  // Days until a YYYY-MM-DD date (negative once it's passed).
+  const daysUntil = (d?: string) => d ? Math.ceil((Date.parse(d + "T23:59:59") - Date.now()) / 86400000) : Infinity;
+  const soon = (d?: string) => !!d && daysUntil(d) <= 30; // expires within 30 days, or already has
 
   // Check maintenance due — last oil change > 3000 miles ago or > 90 days
   const maintDue = vehicles.filter(v => {
@@ -166,7 +177,20 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
               <Badge tone={v.status === "active" ? "green" : v.status === "maintenance" ? "yellow" : "gray"}>{v.status}</Badge>
             </div>
             <div className="font-bold text-lg mb-1">{v.name}</div>
-            <div className="text-xs text-white/60 mb-3">{v.year} {v.make} {v.model}</div>
+            <div className="text-xs text-white/60 mb-1">{v.year} {v.make} {v.model}{v.color ? ` · ${v.color}` : ""}</div>
+            {(() => {
+              const open = (v.issues || []).filter((i: any) => i.status === "open");
+              const driver = employees.find((e: any) => e.id === v.assignedTo);
+              return (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {open.length > 0 && <button onClick={() => setModal({ open: true, data: v })} className={"text-[10px] px-2 py-0.5 rounded-full border " + (open.some((i: any) => i.severity === "high") ? "bg-brand-950/40 border-brand-700/50 text-danger-300" : "bg-yellow-950/30 border-yellow-700/40 text-yellow-300")}>{open.length} open problem{open.length > 1 ? "s" : ""}: {open[0].title}{open.length > 1 ? "…" : ""}</button>}
+                  {soon(v.insuranceExpires) && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-orange-950/30 border-orange-700/40 text-orange-300">Insurance {daysUntil(v.insuranceExpires) < 0 ? "expired" : "expires"} {v.insuranceExpires}</span>}
+                  {soon(v.registrationExpires) && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-orange-950/30 border-orange-700/40 text-orange-300">Registration {daysUntil(v.registrationExpires) < 0 ? "expired" : "expires"} {v.registrationExpires}</span>}
+                  {driver && <span className="text-[10px] px-2 py-0.5 rounded-full border border-white/10 text-white/50">Driver: {driver.firstName}</span>}
+                </div>
+              );
+            })()}
+            {v.notes && <div className="text-[11px] text-white/45 italic mb-2 line-clamp-2">{v.notes}</div>}
             <div className="space-y-1.5 text-xs text-white/70 py-3 border-t border-brand-900/30">
               <div className="flex justify-between"><span>Plate</span><span className="font-mono text-white">{v.licensePlate}</span></div>
               <div className="flex justify-between"><span>Mileage</span>
@@ -182,6 +206,7 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
             <div className="flex gap-1 pt-3 border-t border-brand-900/30">
               <button onClick={() => setMaintId(v.id)} className="flex-1 p-2 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-xs flex items-center justify-center gap-1"><Settings size={12} />Service</button>
               <button onClick={() => setModal({ open: true, data: v })} className="flex-1 p-2 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-xs flex items-center justify-center gap-1"><Edit size={12} />Edit</button>
+              <button onClick={() => removeVehicle(v)} title="Delete vehicle" className="p-2 rounded-lg hover:bg-brand-900/30 text-white/40 hover:text-danger-400 text-xs"><Trash2 size={12} /></button>
             </div>
           </Glass>;
         })}
@@ -190,7 +215,7 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
       {/* Mileage quick-update modal */}
       <MileageUpdateModal logMiles={logMiles} vehicles={vehicles} setVehicles={setVehicles} toast={toast} onClose={() => setLogMiles(null)} />
 
-      <VehicleModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} />
+      <VehicleModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} employees={employees} />
       <MaintenanceModal vid={maintId} vehicle={vehicles.find(v => v.id === maintId)} onClose={() => setMaintId(null)} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />
     </div>
   );

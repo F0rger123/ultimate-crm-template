@@ -31,9 +31,13 @@
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
+import { prepareImportFromFile, runTextImport } from "./textImport";
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
 import { stripMarkdownForSms } from "./textFormat";
 import { SUPABASE_URL } from "./env";
+import { recGet, recList, recPut, OWNER_RECORDS_MISSING } from "./ownerRecords";
+import { runBulkSendBatch } from "./bulkTextSend";
+import { searchCustomers as auditSearch, findDuplicateCustomers, customersMissingInfo, filterCustomers } from "../../../src/lib/customerAudit";
 
 
 // Mirrors the provider/endpoint/modelId table in src/lib/api.ts's MODELS —
@@ -41,22 +45,22 @@ import { SUPABASE_URL } from "./env";
 // Pages Functions build with no access to src/. Keep in sync if a model is
 // added/renamed there.
 const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; name: string; maxTokens: number; supportsTools: boolean }> = {
-  claude: { provider: "anthropic", modelId: "claude-sonnet-5-5", endpoint: "https://api.anthropic.com/v1/messages", name: "Claude", maxTokens: 500, supportsTools: true },
-  openai: { provider: "openai", modelId: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", name: "GPT-4o", maxTokens: 500, supportsTools: true },
-  gemini: { provider: "google", modelId: "gemini-2.5-flash", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", name: "Gemini", maxTokens: 500, supportsTools: true },
-  groq: { provider: "openai-compat", modelId: "openai/gpt-oss-120b", endpoint: "https://api.groq.com/openai/v1/chat/completions", name: "Groq", maxTokens: 500, supportsTools: true },
-  mistral: { provider: "openai-compat", modelId: "mistral-large-latest", endpoint: "https://api.mistral.ai/v1/chat/completions", name: "Mistral", maxTokens: 500, supportsTools: true },
+  claude: { provider: "anthropic", modelId: "claude-sonnet-5-5", endpoint: "https://api.anthropic.com/v1/messages", name: "Claude", maxTokens: 4096, supportsTools: true },
+  openai: { provider: "openai", modelId: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", name: "GPT-4o", maxTokens: 4096, supportsTools: true },
+  gemini: { provider: "google", modelId: "gemini-2.5-flash", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", name: "Gemini", maxTokens: 4096, supportsTools: true },
+  groq: { provider: "openai-compat", modelId: "openai/gpt-oss-120b", endpoint: "https://api.groq.com/openai/v1/chat/completions", name: "Groq", maxTokens: 4096, supportsTools: true },
+  mistral: { provider: "openai-compat", modelId: "mistral-large-latest", endpoint: "https://api.mistral.ai/v1/chat/completions", name: "Mistral", maxTokens: 4096, supportsTools: true },
   // BUG FIX — kept in sync with src/lib/api.ts's MODELS: the old Kimi K2.6
   // and Nemotron 70B slugs are dead on NVIDIA's catalog (confirmed live —
   // "Function ... not found for account"), same ids the in-app chat had.
-  nvidia_kimi: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-v4.1-flash", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek V4.1 Flash", maxTokens: 500, supportsTools: true },
-  nvidia_nemotron: { provider: "openai-compat", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3.5 Lightning", maxTokens: 500, supportsTools: true },
-  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k3", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Kimi K3", maxTokens: 500, supportsTools: true },
-  nvidia_qwen: { provider: "openai-compat", modelId: "nvidia/nemotron-3-super-120b-a12b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3 Super 120B", maxTokens: 500, supportsTools: true },
-  nvidia_muse: { provider: "openai-compat", modelId: "meta/muse-glimmer-30b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Muse Glimmer 30B", maxTokens: 500, supportsTools: true },
+  nvidia_kimi: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-v4.1-flash", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek V4.1 Flash", maxTokens: 4096, supportsTools: true },
+  nvidia_nemotron: { provider: "openai-compat", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3.5 Lightning", maxTokens: 4096, supportsTools: true },
+  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k2.6", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Kimi K2.6", maxTokens: 4096, supportsTools: true },
+  nvidia_qwen: { provider: "openai-compat", modelId: "nvidia/nemotron-3-super-120b-a12b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3 Super 120B", maxTokens: 4096, supportsTools: true },
+  nvidia_muse: { provider: "openai-compat", modelId: "meta/muse-glimmer-30b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Muse Glimmer 30B", maxTokens: 4096, supportsTools: true },
   // OpenRouter's free router (picks a free model that's up) and Cerebras's free tier.
-  openrouter: { provider: "openai-compat", modelId: "openrouter/free", endpoint: "https://openrouter.ai/api/v1/chat/completions", name: "OpenRouter", maxTokens: 500, supportsTools: true },
-  cerebras: { provider: "openai-compat", modelId: "gpt-oss-120b", endpoint: "https://api.cerebras.ai/v1/chat/completions", name: "Cerebras", maxTokens: 500, supportsTools: true },
+  openrouter: { provider: "openai-compat", modelId: "openrouter/free", endpoint: "https://openrouter.ai/api/v1/chat/completions", name: "OpenRouter", maxTokens: 4096, supportsTools: true },
+  cerebras: { provider: "openai-compat", modelId: "gpt-oss-120b", endpoint: "https://api.cerebras.ai/v1/chat/completions", name: "Cerebras", maxTokens: 4096, supportsTools: true },
 };
 const DEFAULT_MODEL_PRIORITY = ["claude", "openai", "gemini", "groq", "mistral"];
 
@@ -247,6 +251,14 @@ type Ctx = {
   owmKey?: string;
   weatherLocation?: string;
   companyAddress?: string;
+  // When this owner message started being handled — send_bulk_text refuses
+  // a draft created after this (the owner hasn't seen that list yet).
+  turnStartedAt?: number;
+  // One-off texts sent this turn; past a few, Alfred has to use the
+  // draft-and-approve bulk flow instead.
+  directSendsThisTurn?: number;
+  // The owner's phone, for reply-watch digests (reply watches only).
+  ownerPhone?: string;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -336,11 +348,123 @@ const sbWrite = async (ctx: Ctx, path: string, method: "POST" | "PATCH", body: R
 
 const ownerScope = (ctx: Ctx) => (ctx.ownerId ? `&owner_id=eq.${encodeURIComponent(ctx.ownerId)}` : "");
 
+// Every row, past Supabase's 1,000-row page cap (a business with 1,500
+// customers used to look like it had 1,000 — or 500 — to Alfred).
+const sbGetAll = async (ctx: Ctx, path: string, max = 20000): Promise<any[]> => {
+  const out: any[] = [];
+  for (let offset = 0; offset < max; offset += 1000) {
+    const page = await sbGet(ctx, `${path}&limit=1000&offset=${offset}&order=id.asc`);
+    out.push(...page);
+    if (page.length < 1000) break;
+  }
+  return out;
+};
+
+// One plain question to whichever AI model the owner has set up (same
+// priority/failover as the main agent), answered as JSON. Used for small
+// reading jobs — e.g. "did this customer's reply answer the question?".
+export const askModelJson = async (modelKeys: Record<string, string>, modelPriority: string[] | undefined, system: string, userText: string): Promise<any | null> => {
+  const priority = modelPriority && modelPriority.length ? modelPriority : DEFAULT_MODEL_PRIORITY;
+  const chain = [...priority, ...Object.keys(SMS_MODELS).filter(m => !priority.includes(m))].filter(m => SMS_MODELS[m] && modelKeys?.[m]);
+  for (const m of chain) {
+    try {
+      const r = await Promise.race([
+        callSmsModel(m, modelKeys[m], system, [{ role: "user", content: userText }], []),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timed out")), 20000)),
+      ]);
+      const match = String(r.text || "").match(/\{[\s\S]*\}/);
+      if (match) return JSON.parse(match[0]);
+    } catch (e: any) { console.warn("[AlfredSms] askModelJson", m, "failed:", e?.message); }
+  }
+  return null;
+};
+
+// One tiny request to one model — for the Alfred health check.
+export const pingSmsModel = async (modelKey: string, apiKey: string): Promise<{ ok: boolean; ms: number; name: string; error?: string }> => {
+  const def = SMS_MODELS[modelKey];
+  const t0 = Date.now();
+  if (!def) return { ok: false, ms: 0, name: modelKey, error: "unknown model" };
+  try {
+    await Promise.race([
+      callSmsModel(modelKey, apiKey, "Reply with the single word OK.", [{ role: "user", content: "ping" }], []),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("no answer in 20s")), 20000)),
+    ]);
+    return { ok: true, ms: Date.now() - t0, name: def.name };
+  } catch (e: any) {
+    return { ok: false, ms: Date.now() - t0, name: def.name, error: String(e?.message || e).slice(0, 160) };
+  }
+};
+export const SMS_MODEL_NAMES: Record<string, string> = Object.fromEntries(Object.entries(SMS_MODELS).map(([k, v]) => [k, v.name]));
+
+// sendSms for other server modules (reply watches) — same opt-out check and
+// Inbox logging as every Alfred send.
+export const sendCustomerSmsAsAlfred = (ctx: any, to: string, body: string, contact?: { name?: string; customerId?: string }, isOwnerReply = false) =>
+  sendSms(ctx as Ctx, to, body, isOwnerReply, contact);
+
+// Reads a receipt / bill / statement / revenue report / tax form (photo,
+// screenshot or PDF) with a vision-capable model the owner has a key for.
+const FIN_DOC_PROMPT = `You read a small business's financial document (receipt, bill, invoice they paid, bank or card statement, revenue/sales report, or tax form). Reply with ONLY JSON, no prose:
+{"documentType": "receipt"|"bill"|"bank_statement"|"card_statement"|"revenue_report"|"tax_document"|"other",
+ "vendor": string, "date": "YYYY-MM-DD" or "",
+ "items": [{"kind": "expense"|"income", "date": "YYYY-MM-DD" or "", "description": string, "amount": number, "category": one of "Fuel","Chemicals","Equipment","Insurance","Marketing","Truck Payment","Maintenance","Subcontractors","Office","Other" for expenses or "revenue" for income, "vendor": string}],
+ "taxNotes": string (key figures from a tax document — form, year, totals, amounts owed/refunded — else ""),
+ "summary": string (one short line)}
+A single receipt is ONE expense item for its total (not each product line). A statement is one item per transaction. Money coming in (deposits, sales, payouts) is income. Never invent numbers you can't read.`;
+const readFinancialDocument = async (ctx: Ctx, url: string, type: string, hint: string): Promise<any> => {
+  if (!/^https:\/\//.test(url)) return { error: "fileUrl must be the https url from the attached-file line." };
+  const fileRes = await fetch(url).catch(() => null);
+  if (!fileRes?.ok) return { error: "Couldn't download that file." };
+  const buf = new Uint8Array(await fileRes.arrayBuffer());
+  if (buf.length > 15 * 1024 * 1024) return { error: "That file is over 15 MB — send a smaller photo or a few pages at a time." };
+  const mime = (type || fileRes.headers.get("content-type") || "").split(";")[0] || (url.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+  let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  const b64 = btoa(bin);
+  const isPdf = mime === "application/pdf";
+  const keys = ctx.modelKeys || {};
+  const ask = `${FIN_DOC_PROMPT}${hint ? `\nThe owner said: "${hint}"` : ""}`;
+  const parse = (t: string) => { const m = String(t || "").match(/\{[\s\S]*\}/); return m ? JSON.parse(m[0]) : null; };
+  const tries: Array<() => Promise<any>> = [];
+  if (keys.claude) tries.push(async () => {
+    const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": keys.claude, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 4096, messages: [{ role: "user", content: [isPdf ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } } : { type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: ask }] }] }) });
+    if (!r.ok) throw new Error("Claude " + r.status);
+    const d: any = await r.json(); return parse(d.content?.find((b: any) => b.type === "text")?.text);
+  });
+  if (keys.gemini) tries.push(async () => {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(keys.gemini)}`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: ask }] }], generationConfig: { maxOutputTokens: 4096 } }) });
+    if (!r.ok) throw new Error("Gemini " + r.status);
+    const d: any = await r.json(); return parse(d.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join(""));
+  });
+  if (keys.openai && !isPdf) tries.push(async () => {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${keys.openai}` },
+      body: JSON.stringify({ model: "gpt-4o", max_tokens: 4096, messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }, { type: "text", text: ask }] }] }) });
+    if (!r.ok) throw new Error("OpenAI " + r.status);
+    const d: any = await r.json(); return parse(d.choices?.[0]?.message?.content);
+  });
+  if (!tries.length) return { error: `Reading ${isPdf ? "PDFs" : "photos"} needs a Claude${isPdf ? "" : ", GPT-4o"} or Gemini key in Settings → AI Models.` };
+  for (const t of tries) {
+    try { const out = await t(); if (out) return out; } catch (e: any) { console.warn("[AlfredSms] financial document read failed:", e?.message); }
+  }
+  return { error: "Couldn't read that document — try a clearer photo, or send the numbers as text." };
+};
+
 // ─── Tool implementations ──────────────────────────────────────────────────
 
+// BUG FIX — only looked at the first 500 customers, so with a bigger list
+// most names "weren't found." Ask the server for name matches first; fall
+// back to reading everyone.
 const findCustomerByName = async (ctx: Ctx, name: string) => {
-  const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,phone,email,documents,stripeCustomerId,savedPaymentMethodLabel${ownerScope(ctx)}&limit=500`);
-  const q = name.toLowerCase().trim();
+  const sel = `select=id,firstName,lastName,phone,email,documents,stripeCustomerId,savedPaymentMethodLabel${ownerScope(ctx)}`;
+  const q = String(name || "").toLowerCase().trim();
+  if (!q) return undefined;
+  const parts = q.split(/\s+/).map(w => w.replace(/[^a-z0-9'-]/gi, "")).filter(Boolean);
+  let rows: any[] = [];
+  if (parts.length) {
+    const first = encodeURIComponent(`*${parts[0]}*`), last = encodeURIComponent(`*${parts[parts.length - 1]}*`);
+    rows = await sbGet(ctx, `customers?${sel}&or=(firstName.ilike.${first},lastName.ilike.${last},lastName.ilike.${first})&limit=1000`);
+  }
+  if (!rows.some((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(q))) rows = await sbGetAll(ctx, `customers?${sel}`);
   return rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().trim() === q)
     || rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(q));
 };
@@ -599,7 +723,7 @@ const TOOLS = [
   // needing to open the app.
   {
     name: "notify_all_customers",
-    description: "Text a message to many customers at once — everyone, or narrowed by tag. Automatically skips anyone who's opted out of texts, and respects Testing Mode if it's on (only test clients get messaged). Use for broadcast announcements ('running late today', a schedule change, a weather closure) and for sending a promotion/campaign message to your list. Supports {{first_name}} in the message. This sends for real — only call it once you have the exact message the owner wants sent.",
+    description: "Same as prepare_bulk_text with audience all/tag: DRAFTS a text to many customers and returns the numbered list for the owner to approve — nothing is sent until send_bulk_text after they reply. Skips opted-out customers and respects Testing Mode. Supports {{first_name}}.",
     input_schema: {
       type: "object",
       properties: {
@@ -703,12 +827,31 @@ const TOOLS = [
   },
   {
     name: "search_customers",
-    description: "Search customers by name, email, or address fragment — use this to find a customer (or confirm one exists) before referencing them, especially when the exact full name isn't known.",
+    description: "Search the WHOLE customer list for a person — partial/misspelled names, nicknames, sound-alikes, part of a phone number or email, street, city, company, tags, notes ('a Jon on Oak St', 'someone with a 0199 number'). Use to find a customer or answer 'do I have anyone like this'.",
     input_schema: {
       type: "object",
-      properties: { query: { type: "string", description: "Search text (name, email, or address fragment)" } },
+      properties: { query: { type: "string", description: "Anything known about them" } },
       required: ["query"],
     },
+  },
+  {
+    name: "find_duplicate_customers",
+    description: "Scan the ENTIRE customer list for duplicates — same phone, same email, same name, nicknames (Bill/William), similar spellings (Smith/Smyth, Katherine/Catherine), same address. No names needed. Use for 'check my client base for duplicates'.",
+    input_schema: { type: "object", properties: { includePossible: { type: "boolean", description: "Also list weaker matches (similar spelling / same address). Default true." } } }
+  },
+  {
+    name: "customers_missing_info",
+    description: "Scan the ENTIRE customer list for missing details — which customers have no phone, email, address, last name, birthday or lead source. Use for 'who am I missing info for'.",
+    input_schema: { type: "object", properties: { fields: { type: "array", items: { type: "string", enum: ["phone", "email", "address", "lastName", "birthday", "leadSource"] }, description: "Default phone, email, address" } } }
+  },
+  {
+    name: "filter_customers",
+    description: "Find every customer matching a description across the whole CRM — 'customers in Hanover', 'VIPs who spent over $1,000', 'people I haven't serviced in a year', 'leads from Facebook', 'birthdays this month', 'anyone with pool in their notes'. Returns the count and the list.",
+    input_schema: { type: "object", properties: {
+        city: { type: "string" }, tag: { type: "string" }, leadSource: { type: "string" }, minSpent: { type: "number" }, maxSpent: { type: "number" },
+        noServiceInDays: { type: "number" }, servicedWithinDays: { type: "number" }, hasJobs: { type: "boolean" }, isLead: { type: "boolean" },
+        createdAfter: { type: "string" }, createdBefore: { type: "string" }, textContains: { type: "string" }, hasBirthdayThisMonth: { type: "boolean" }, optedOutOfTexts: { type: "boolean" },
+      } }
   },
   {
     name: "get_customer_details",
@@ -791,9 +934,216 @@ const TOOLS = [
   },
   {
     name: "list_campaigns",
-    description: "List marketing campaigns and their status.",
+    description: "List marketing campaigns (the CRM's Campaigns page) and their status.",
     input_schema: { type: "object", properties: {} },
   },
+  // ─── Bulk texting (draft → owner approves → send) ─────────────────────────
+  // FEATURE — "have it question me which customers to send to … it should
+  // be a back-and-forth: Alfred asks 'how about these?' and I say no, yes,
+  // no, and it sends only after I give the okay." Texting more than a
+  // couple of people is two tools: prepare_bulk_text drafts it and returns
+  // the numbered list; send_bulk_text sends it — and the server refuses to
+  // send a draft made in the same message (the owner has to have replied).
+  {
+    name: "prepare_bulk_text",
+    description: "Step 1 of texting several customers (anything more than 2 people — a campaign, an announcement, a question to your list). Builds the recipient list and saves a DRAFT — nothing is sent. Also creates the campaign in the CRM's Campaigns page. Show the owner the numbered list it returns and ask which to send to; then STOP and wait for their reply. If the message asks customers a question (birthday, email, address…), pass watchReplies so their answers are saved to their files automatically as they come in.",
+    input_schema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "Exact text. Use {{first_name}} to personalize." },
+        campaignName: { type: "string", description: "Short name for the Campaigns page, e.g. 'Birthday collection'" },
+        audience: { type: "string", enum: ["all", "tag", "names"], description: "Everyone with a phone, customers with a tag, or a list of names" },
+        tag: { type: "string" },
+        customerNames: { type: "array", items: { type: "string" } },
+        onlyMissing: { type: "string", enum: ["birthday", "email", "address"], description: "Only customers whose file doesn't have this yet" },
+        watchReplies: {
+          type: "object",
+          description: "Watch for answers and act on them automatically",
+          properties: {
+            question: { type: "string", description: "What's being asked, in plain words" },
+            saveField: { type: "string", enum: ["birthday", "email", "address", "notes", "company"] },
+            thankYouMessage: { type: "string", description: "Optional reply once they answer" },
+            days: { type: "number", description: "How long to keep watching (default 30)" },
+          },
+        },
+      },
+      required: ["message", "audience"],
+    },
+  },
+  {
+    name: "send_bulk_text",
+    description: "Step 2: send a draft from prepare_bulk_text AFTER the owner has replied to approve it. Pass the numbers they said no to in exclude, or only the numbers they said yes to in only. Never call this in the same reply as prepare_bulk_text — it will be refused.",
+    input_schema: {
+      type: "object",
+      properties: {
+        draftId: { type: "string" },
+        exclude: { type: "array", items: { type: "number" }, description: "List numbers NOT to send to" },
+        only: { type: "array", items: { type: "number" }, description: "Send only to these list numbers" },
+        ownerApproval: { type: "string", description: "The owner's own words approving it, quoted" },
+      },
+      required: ["draftId", "ownerApproval"],
+    },
+  },
+  {
+    name: "list_bulk_text_drafts",
+    description: "Drafts waiting for the owner's OK (prepare_bulk_text), newest first.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_reply_watches",
+    description: "Questions Alfred texted customers and is watching replies for — who answered, who hasn't.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_birthday_offer",
+    description: "Turn on (or change/turn off) an automatic birthday text: on each customer's birthday (from their file) they get a coupon code for X% off, good for N days. Runs every day on its own.",
+    input_schema: {
+      type: "object",
+      properties: {
+        active: { type: "boolean" },
+        discountPercent: { type: "number" },
+        validDays: { type: "number", description: "How long the coupon is good for, e.g. 30 or 60" },
+        message: { type: "string", description: "Optional custom text. {{first_name}}, {{code}}, {{percent}}, {{expires}} are filled in." },
+      },
+      required: ["active"],
+    },
+  },
+  // ─── Campaigns / goals (shown in the CRM) ─────────────────────────────────
+  {
+    name: "create_campaign",
+    description: "Create a campaign in the CRM's Campaigns page (draft or scheduled) without texting anyone. Use prepare_bulk_text instead when the owner wants it sent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" }, channel: { type: "string", enum: ["sms", "email"] },
+        message: { type: "string" }, subject: { type: "string" },
+        tags: { type: "array", items: { type: "string" }, description: "Audience tags" },
+        sendAt: { type: "string", description: "ISO date/time to schedule; omit for a draft" },
+      },
+      required: ["name", "message"],
+    },
+  },
+  {
+    name: "create_goal",
+    description: "Create a goal in the CRM's Goals page. Business metrics (revenue, jobs, clients, recurring clients, leads) track themselves; anything else is a custom goal.",
+    input_schema: {
+      type: "object",
+      properties: {
+        label: { type: "string" }, target: { type: "number" }, unit: { type: "string", description: "e.g. $, jobs, clients" },
+        metric: { type: "string", enum: ["revenue", "jobs", "clients", "recurringClients", "leads", "custom"] },
+        deadline: { type: "string", description: "YYYY-MM-DD" }, category: { type: "string", enum: ["business", "personal", "fitness"] },
+        rewardDescription: { type: "string" },
+      },
+      required: ["label", "target"],
+    },
+  },
+  {
+    name: "get_accountability_summary",
+    description: "The owner's personal check-ins from the Accountability page (sleep, water, steps, workouts, mood, notes), streak and recent wins. For check-ins, briefings, reflections, or when they ask how they're doing — not during business tasks.",
+    input_schema: { type: "object", properties: { days: { type: "number" } } },
+  },
+  {
+    name: "list_goals",
+    description: "The owner's goals and progress.",
+    input_schema: { type: "object", properties: {} },
+  },
+  // ─── Many at once ─────────────────────────────────────────────────────────
+  // FEATURE — "if I give Alfred 50 customers with specific instructions and
+  // scheduling for each, it should handle that in one message." One call
+  // carries the whole list instead of 50 separate rounds.
+  {
+    name: "schedule_jobs_bulk",
+    description: "Schedule many jobs in one call — one entry per job, each with its own customer, date, time, crew, notes, checklist, tags, recurring schedule. Customers not in the CRM yet are created first when you give their phone/address. Use this whenever there are more than 2 jobs to schedule.",
+    input_schema: {
+      type: "object",
+      properties: {
+        jobs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              customerName: { type: "string" }, customerPhone: { type: "string" }, customerAddress: { type: "string" },
+              date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string" }, employeeName: { type: "string" },
+              amount: { type: "number" }, notes: { type: "string" }, internalNotes: { type: "string" },
+              checklist: { type: "array", items: { type: "string" } }, tags: { type: "array", items: { type: "string" } },
+              jobType: { type: "string", enum: ["residential", "commercial"] },
+              isRecurring: { type: "boolean" }, recurringFreq: { type: "string", enum: ["weekly", "biweekly", "monthly", "quarterly", "yearly"] },
+            },
+            required: ["customerName", "date"],
+          },
+        },
+      },
+      required: ["jobs"],
+    },
+  },
+  {
+    name: "create_customers_bulk",
+    description: "Add many customers in one call (skips ones already in the CRM by phone or name).",
+    input_schema: {
+      type: "object",
+      properties: {
+        customers: { type: "array", items: { type: "object", properties: { firstName: { type: "string" }, lastName: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, address: { type: "string" }, notes: { type: "string" }, tags: { type: "array", items: { type: "string" } }, birthday: { type: "string" } }, required: ["firstName"] } },
+      },
+      required: ["customers"],
+    },
+  },
+  {
+    name: "update_customers_bulk",
+    description: "Update many customers in one call — each entry names the customer and the fields to change (phone, email, address, notes to add, tags to add, birthday, company).",
+    input_schema: {
+      type: "object",
+      properties: {
+        updates: { type: "array", items: { type: "object", properties: { customerName: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, address: { type: "string" }, addNote: { type: "string" }, addTags: { type: "array", items: { type: "string" } }, birthday: { type: "string" }, company: { type: "string" } }, required: ["customerName"] } },
+      },
+      required: ["updates"],
+    },
+  },
+  // ─── Client / job list imports ─────────────────────────────────────────────
+  {
+    name: "prepare_import_from_file",
+    description: "Read a client list or job/route list the owner texted — a CSV, a photo or PDF of a list (its url is in the '[Attached file ready to save …]' line), a Google Sheets link, or a list typed in the text — and get it ready to import: every row, existing customers matched (no duplicates), workers matched to employees, dates/times/repeat schedules/prices worked out. Saves NOTHING; returns counts and a sample to text the owner. Use this whenever a file or message is a list of customers or jobs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fileUrl: { type: "string", description: "The url from the attached-file line" },
+        fileType: { type: "string", description: "The type from the attached-file line" },
+        sheetUrl: { type: "string", description: "A Google Sheets link from the text" },
+        text: { type: "string", description: "Only when the list was typed into the text itself" },
+        serviceCategory: { type: "string", enum: ["trash_can", "general"], description: "general unless the business has a trash_can service line" },
+        createJobs: { type: "boolean", description: "Create jobs from schedule/price info (default true)" },
+      },
+    },
+  },
+  {
+    name: "run_import",
+    description: "Save the import prepare_import_from_file got ready — only after the owner replied YES to that summary in a later text. Leave planId out to use the latest one.",
+    input_schema: { type: "object", properties: { planId: { type: "string" } } },
+  },
+  // ─── Money documents ──────────────────────────────────────────────────────
+  {
+    name: "import_financial_document",
+    description: "Read a photo, screenshot or PDF the owner sent (its url is in the '[Attached file ready to save …]' line) of receipts, bills, bank/card statements, revenue reports or tax paperwork, and import it: expenses go to the Expenses page, income to the Budget page, tax figures are remembered. Use whenever they send a money document — ask what it is only if it's unclear.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fileUrl: { type: "string" }, fileType: { type: "string", description: "the type from the attached-file line" },
+        hint: { type: "string", description: "What the owner said it is, if anything" },
+      },
+      required: ["fileUrl"],
+    },
+  },
+  {
+    name: "log_expenses",
+    description: "Add expenses the owner tells you about (one or many) to the Expenses page.",
+    input_schema: {
+      type: "object",
+      properties: {
+        expenses: { type: "array", items: { type: "object", properties: { date: { type: "string" }, description: { type: "string" }, amount: { type: "number" }, category: { type: "string", enum: ["Fuel", "Chemicals", "Equipment", "Insurance", "Marketing", "Truck Payment", "Maintenance", "Subcontractors", "Office", "Other"] }, vendor: { type: "string" } }, required: ["description", "amount"] } },
+      },
+      required: ["expenses"],
+    },
+  },
+
   {
     name: "list_social_posts",
     description: "List recent/scheduled social media posts.",
@@ -822,10 +1172,10 @@ const TOOLS = [
   },
   {
     name: "update_customer",
-    description: "Edit an existing customer's contact info — phone, email, address, or notes. Use for 'fix Jane's phone number to...' or 'update the Millers' address'. Does not create a new customer.",
+    description: "Edit an existing customer's info — phone, email, address, notes, birthday (YYYY-MM-DD, or --MM-DD without a year), company. Use for 'fix Jane's phone number to...' or 'update the Millers' address'. Does not create a new customer.",
     input_schema: {
       type: "object",
-      properties: { customerName: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, address: { type: "string" }, notes: { type: "string" } },
+      properties: { customerName: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, address: { type: "string" }, notes: { type: "string" }, birthday: { type: "string" }, company: { type: "string" } },
       required: ["customerName"],
     },
   },
@@ -1273,7 +1623,9 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
   create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes", set_estimate_deposit: "create_quotes",
   send_estimate: "send_quotes", send_invoice: "send_quotes",
-  notify_all_customers: "mass_messaging",
+  notify_all_customers: "mass_messaging", prepare_bulk_text: "mass_messaging", send_bulk_text: "mass_messaging", set_birthday_offer: "mass_messaging",
+  schedule_jobs_bulk: "schedule_jobs", create_customers_bulk: "add_customers", update_customers_bulk: "add_customers",
+  create_campaign: "automations",
   text_customer: "message_customers", text_phone_number: "message_customers",
   text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
   send_email_via_gmail: "send_email",
@@ -1575,6 +1927,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         return { success: true, customerId: row.id };
       }
       case "text_customer": {
+        if ((ctx.directSendsThisTurn = (ctx.directSendsThisTurn || 0) + 1) > 3) return { error: "Refused: that's more than 3 separate texts in one go. Use prepare_bulk_text so the owner can approve the list first." };
         const cust = await findCustomerByName(ctx, input.customerName);
         if (!cust) return { error: `No customer found matching "${input.customerName}".` };
         if (!cust.phone) return { error: `${input.customerName} has no phone number on file.` };
@@ -1583,50 +1936,30 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}` };
       }
       case "text_phone_number": {
+        if ((ctx.directSendsThisTurn = (ctx.directSendsThisTurn || 0) + 1) > 3) return { error: "Refused: that's more than 3 separate texts in one go. Use prepare_bulk_text so the owner can approve the list first." };
         if (!input.phone) return { error: "phone required" };
         if (!input.message) return { error: "message required" };
         const res = await sendSms(ctx, input.phone, input.message, false, { name: input.label || input.phone });
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: input.label || input.phone };
       }
-      case "notify_all_customers": {
-        if (!input.message) return { error: "message required" };
-        const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,phone,tags,smsOptOut,isTestClient${ownerScope(ctx)}&limit=2000`);
-        let eligible = rows.filter((c: any) => c.phone && !c.smsOptOut);
-        if (input.tag) eligible = eligible.filter((c: any) => Array.isArray(c.tags) && c.tags.includes(input.tag));
-        // Same Testing Mode contract as lib/messaging.ts's twilioSend
-        // (isTestModeBlockedPhone): a customer flagged "Test Client" is
-        // someone the owner specifically wants protected from real sends
-        // while Testing Mode is on — it's a do-not-disturb flag for that
-        // switch, not "only message these." Everyone else still gets a
-        // real text either way; only test-flagged contacts get skipped,
-        // and only while the switch is on.
-        if (ctx.testModeEnabled) eligible = eligible.filter((c: any) => !c.isTestClient);
-        if (eligible.length === 0) return { error: "No eligible customers matched (check they have a phone on file, haven't opted out, and — if Testing Mode is on — aren't all flagged Test Client)." };
-        // SAFETY — a hard ceiling per single command, independent of
-        // whatever daily automation cap Settings has. Not a normal owner
-        // scenario to hit; exists purely so a weird/misfired request can't
-        // blast an unbounded number of texts in one shot.
-        const capped = eligible.slice(0, 500);
-        let sent = 0, failed = 0;
-        for (const c of capped) {
-          const personalized = input.message.replace(/{{first_name}}/g, c.firstName || "there");
-          const res = await sendSms(ctx, c.phone, personalized, false, { name: `${c.firstName || ""} ${c.lastName || ""}`.trim(), customerId: c.id });
-          if (res.ok) sent++; else failed++;
-          await new Promise(r => setTimeout(r, 100)); // avoid hammering Twilio's rate limit
-        }
-        return { success: true, sent, failed, skippedOptedOutOrIneligible: rows.length - eligible.length, ...(eligible.length > capped.length ? { note: `Capped at 500 — ${eligible.length - capped.length} more eligible customers were not messaged this round.` } : {}) };
-      }
+      // Never sends directly any more — drafts it for the owner's OK
+      // (see prepare_bulk_text / send_bulk_text).
+      case "notify_all_customers":
+        return executeToolCore(ctx, "prepare_bulk_text", { message: input.message, audience: input.tag ? "tag" : "all", tag: input.tag, campaignName: input.campaignName });
       case "create_promotion": {
         if (!input.name || !input.discountType || input.discountValue == null) return { error: "name, discountType, and discountValue required" };
         const code = (input.name as string).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SAVE" + Math.floor(Math.random() * 1000);
         const validFrom = today();
         const validUntil = new Date(Date.now() + (Number(input.expiresInDays) || 30) * 86400000).toISOString().slice(0, 10);
+        // BUG FIX — written with snake_case names (discount_type,
+        // valid_until…) the promotions table doesn't have, so every coupon
+        // Alfred "created" was rejected. Same fields PromotionsPage saves.
         const row = {
           id: crypto.randomUUID(), owner_id: ctx.ownerId, name: input.name, code,
-          discount_type: input.discountType, discount_value: input.discountValue,
-          valid_from: validFrom, valid_until: validUntil, usage_count: 0, audience: "all",
-          created_at: new Date().toISOString(),
+          discountType: input.discountType === "fixed" ? "fixed" : "percent", discountValue: Number(input.discountValue) || 0,
+          validFrom, validTo: validUntil, redeemedCount: 0, audience: "all", status: "active", channel: "sms",
+          createdAt: today(),
         };
         const res = await sbWrite(ctx, "promotions", "POST", row);
         if (!res.ok) return { error: res.error };
@@ -1763,13 +2096,30 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
         return { success: true, jobId: job.id, priority: input.priority };
       }
+      // Whole-CRM search — see src/lib/customerAudit.ts.
       case "search_customers": {
-        const q = String(input.query || "").toLowerCase();
-        const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,email,phone,address,totalSpent,notes${ownerScope(ctx)}&limit=1000`);
-        const results = rows.filter((c: any) => `${c.firstName} ${c.lastName} ${c.email || ""} ${c.address || ""}`.toLowerCase().includes(q)).slice(0, 10).map((c: any) => ({
-          id: c.id, name: `${c.firstName} ${c.lastName}`.trim(), email: c.email, phone: c.phone, address: c.address, totalSpent: c.totalSpent, notes: c.notes,
-        }));
-        return { success: true, count: results.length, customers: results };
+        const all = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const r = auditSearch(all, String(input.query || ""), 15);
+        if (!r.total) return { success: true, count: 0, customersChecked: all.length, note: "No one matched." };
+        return { success: true, count: r.total, customersChecked: all.length, customers: r.results.map(x => ({ id: x.id, name: x.name, phone: x.phone, email: x.email, address: x.address, matchedOn: x.matched })) };
+      }
+      case "find_duplicate_customers": {
+        const all = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const r = findDuplicateCustomers(all, { includePossible: input.includePossible !== false });
+        return { success: true, customersChecked: r.customersChecked, groupsFound: r.groups.length, groups: r.groups.slice(0, 30).map(g => ({ strength: g.strength, reason: g.reason, names: g.customers.map(c => c.name) })) };
+      }
+      case "customers_missing_info": {
+        const all = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const r = customersMissingInfo(all, Array.isArray(input.fields) ? input.fields : undefined, 25);
+        return { success: true, ...r, customers: r.customers.map(c => `${c.name}: missing ${c.missing.join(", ")}`) };
+      }
+      case "filter_customers": {
+        const [all, jb] = await Promise.all([
+          sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`),
+          sbGetAll(ctx, `jobs?select=customerId,scheduledDate,completedAt,status${ownerScope(ctx)}`),
+        ]);
+        const r = filterCustomers(all, jb, input || {}, 30);
+        return { success: true, total: r.total, customersChecked: all.length, customers: r.customers.map(c => `${c.name}${c.phone ? " " + c.phone : ""}${c.lastService ? " · last service " + c.lastService : ""}${c.totalSpent ? " · $" + c.totalSpent : ""}`) };
       }
       case "get_customer_details": {
         const cust = await findCustomerByName(ctx, input.customerName);
@@ -1933,9 +2283,271 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         if (!res.ok) return { error: res.error };
         return { success: true, id: row.id, title: row.title };
       }
+      // ─── Bulk texting: draft → owner approves → send ──────────────────────
+      case "prepare_bulk_text": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        if (!String(input.message || "").trim()) return { error: "message required — ask the owner what it should say." };
+        let rows = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const total = rows.length;
+        rows = rows.filter((c: any) => c.phone && !c.smsOptOut && !(ctx.testModeEnabled && c.isTestClient));
+        if (input.audience === "tag") {
+          if (!input.tag) return { error: "tag required for audience 'tag'." };
+          const t = String(input.tag).toLowerCase();
+          rows = rows.filter((c: any) => Array.isArray(c.tags) && c.tags.some((x: string) => String(x).toLowerCase() === t));
+        } else if (input.audience === "names") {
+          const names: string[] = Array.isArray(input.customerNames) ? input.customerNames : [];
+          if (!names.length) return { error: "customerNames required for audience 'names'." };
+          const picked: any[] = [];
+          const notFound: string[] = [];
+          for (const nm of names) {
+            const q = String(nm).toLowerCase().trim();
+            const hit = rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().trim() === q) || rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(q));
+            if (hit && !picked.includes(hit)) picked.push(hit); else if (!hit) notFound.push(nm);
+          }
+          rows = picked;
+          if (notFound.length) (input as any)._notFound = notFound;
+        }
+        if (input.onlyMissing) rows = rows.filter((c: any) => !String(c[input.onlyMissing] || "").trim());
+        if (rows.length === 0) return { error: `Nobody matched — of ${total} customers, none have a phone number, haven't opted out, and fit "${input.audience}${input.tag ? " " + input.tag : ""}${input.onlyMissing ? ", missing " + input.onlyMissing : ""}".` };
+        const recipients = rows.map((c: any, i: number) => ({ n: i + 1, customerId: c.id, name: `${c.firstName || ""} ${c.lastName || ""}`.trim() || c.phone, firstName: c.firstName || "", phone: c.phone, status: "pending" }));
+        const draftId = crypto.randomUUID();
+        const campaignId = crypto.randomUUID();
+        const camp = await recPut(ctx.authHeaders, ctx.ownerId, "campaigns", {
+          id: campaignId, name: input.campaignName || String(input.message).slice(0, 40), ch: "sms", body: input.message, status: "draft",
+          createdAt: new Date().toISOString(), recipientCount: recipients.length, matches: recipients.map((r: any) => r.customerId),
+          segment: input.audience === "tag" && input.tag ? { tags: [input.tag] } : undefined, createdBy: "alfred", alfredDraftId: draftId,
+        });
+        if (!camp.ok) return { error: OWNER_RECORDS_MISSING + " (" + camp.error + ")" };
+        const draft = { id: draftId, campaignId, message: input.message, recipients, status: "draft", createdAt: new Date().toISOString(), watchReplies: input.watchReplies || null };
+        const saved = await recPut(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", draft);
+        if (!saved.ok) return { error: "Couldn't save the draft — " + saved.error };
+        const SHOW = 40;
+        return {
+          success: true, draftId, notSentYet: true, recipientCount: recipients.length,
+          list: recipients.slice(0, SHOW).map((r: any) => `${r.n}. ${r.name}`),
+          more: recipients.length > SHOW ? recipients.length - SHOW : 0,
+          notFound: (input as any)._notFound,
+          sample: String(input.message).replace(/{{first_name}}/g, recipients[0].firstName || "there"),
+          next: "Nothing has been sent. Text the owner the numbered list (and the sample message) and ask which to send to — e.g. 'all', 'not 3 and 7', or 'only 1, 2, 5'. Then stop and wait for their reply before calling send_bulk_text.",
+        };
+      }
+      case "send_bulk_text": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const draft: any = await recGet(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", String(input.draftId || ""));
+        if (!draft) return { error: "That draft wasn't found — call list_bulk_text_drafts, or prepare a new one." };
+        if (draft.status !== "draft") return { error: `That draft is already ${draft.status}.` };
+        // The owner must have seen the list: a draft made during this same
+        // message can't be sent until they reply.
+        if (Date.parse(draft.createdAt) >= (ctx.turnStartedAt || 0)) {
+          return { error: "Refused: the owner hasn't seen this list yet. Show them the numbered list and wait for their reply before sending." };
+        }
+        if (Date.now() - Date.parse(draft.createdAt) > 3 * 86400000) return { error: "That draft is more than 3 days old — prepare a fresh one so the list is current." };
+        const only = new Set<number>((Array.isArray(input.only) ? input.only : []).map(Number));
+        const exclude = new Set<number>((Array.isArray(input.exclude) ? input.exclude : []).map(Number));
+        for (const r of draft.recipients) {
+          const keep = only.size ? only.has(r.n) : !exclude.has(r.n);
+          r.status = keep ? "pending" : "skipped";
+          if (!keep) r.error = "owner said no";
+        }
+        const chosen = draft.recipients.filter((r: any) => r.status === "pending");
+        if (!chosen.length) return { error: "With those choices nobody is left to send to." };
+        draft.status = "sending"; draft.approvedAt = new Date().toISOString(); draft.approval = String(input.ownerApproval || "").slice(0, 200);
+        if (draft.watchReplies?.question) {
+          const days = Math.max(1, Math.min(120, Number(draft.watchReplies.days) || 30));
+          const watch = {
+            id: crypto.randomUUID(), campaignId: draft.campaignId, question: draft.watchReplies.question,
+            saveField: draft.watchReplies.saveField || undefined, thankYouMessage: draft.watchReplies.thankYouMessage || undefined,
+            customers: Object.fromEntries(chosen.map((r: any) => [r.customerId, { name: r.name, status: "waiting" }])),
+            createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + days * 86400000).toISOString(),
+          };
+          const w = await recPut(ctx.authHeaders, ctx.ownerId, "reply_watch", watch);
+          if (w.ok) draft.watchId = watch.id;
+        }
+        await recPut(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", draft);
+        if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { error: "Twilio isn't configured for this account." };
+        const after = await runBulkSendBatch(ctx.authHeaders, ctx.ownerId, { sid: ctx.twilioSid, token: ctx.twilioToken, from: ctx.twilioFrom }, draft, Date.now() + 35000);
+        const left = after.recipients.filter(r => r.status === "pending").length;
+        return {
+          success: true, sent: after.sentCount, failed: after.failedCount, skipped: after.recipients.filter(r => r.status === "skipped").length,
+          stillSending: left, watchingReplies: !!draft.watchId,
+          note: left ? `${left} more go out automatically over the next several minutes.` : undefined,
+        };
+      }
+      case "list_bulk_text_drafts": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const { ok, rows, error } = await recList(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", { limit: 10 });
+        if (!ok) return { error: OWNER_RECORDS_MISSING + " (" + error + ")" };
+        return { success: true, drafts: rows.map((d: any) => ({ draftId: d.id, status: d.status, created: d.createdAt, recipients: d.recipients?.length || 0, sent: d.sentCount || 0, message: String(d.message || "").slice(0, 80) })) };
+      }
+      case "list_reply_watches": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const { ok, rows, error } = await recList(ctx.authHeaders, ctx.ownerId, "reply_watch", { limit: 10 });
+        if (!ok) return { error: OWNER_RECORDS_MISSING + " (" + error + ")" };
+        return { success: true, watches: rows.map((w: any) => {
+          const cs = Object.values(w.customers || {}) as any[];
+          return { question: w.question, savesTo: w.saveField, answered: cs.filter(c => c.status === "answered").length, waiting: cs.filter(c => c.status === "waiting").length, expires: w.expiresAt, recentAnswers: cs.filter(c => c.status === "answered").slice(-10).map(c => `${c.name}: ${c.answer}`) };
+        }) };
+      }
+      case "set_birthday_offer": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const cur: any = (await recGet(ctx.authHeaders, ctx.ownerId, "birthday_offer", "default")) || {};
+        const cfg = { ...cur, id: "default", active: !!input.active, discountPercent: Number(input.discountPercent ?? cur.discountPercent ?? 10), validDays: Number(input.validDays ?? cur.validDays ?? 30), message: input.message ?? cur.message };
+        const r = await recPut(ctx.authHeaders, ctx.ownerId, "birthday_offer", cfg);
+        if (!r.ok) return { error: OWNER_RECORDS_MISSING + " (" + r.error + ")" };
+        const withBday = (await sbGetAll(ctx, `customers?select=id&birthday=not.is.null${ownerScope(ctx)}`)).length;
+        return { success: true, active: cfg.active, discountPercent: cfg.discountPercent, validDays: cfg.validDays, customersWithBirthdayOnFile: withBday, note: "Runs every morning (needs the /api/check-reminders scheduler that already sends reminders)." };
+      }
+      // ─── Campaigns / goals ────────────────────────────────────────────────
+      case "create_campaign": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const sendAt = input.sendAt ? new Date(input.sendAt) : null;
+        if (sendAt && isNaN(sendAt.getTime())) return { error: "sendAt isn't a valid date/time." };
+        const camp = { id: crypto.randomUUID(), name: input.name, ch: input.channel === "email" ? "email" : "sms", subject: input.subject || "", body: input.message, status: sendAt ? "scheduled" : "draft", sendAt: sendAt ? sendAt.toISOString() : undefined, createdAt: new Date().toISOString(), segment: Array.isArray(input.tags) && input.tags.length ? { tags: input.tags } : undefined, createdBy: "alfred" };
+        const r = await recPut(ctx.authHeaders, ctx.ownerId, "campaigns", camp);
+        if (!r.ok) return { error: OWNER_RECORDS_MISSING + " (" + r.error + ")" };
+        return { success: true, campaignId: camp.id, status: camp.status, note: "It's in Campaigns in the CRM. Scheduled campaigns go out from the CRM at that time." };
+      }
       case "list_campaigns": {
-        const rows = await sbGet(ctx, `campaigns?select=id,name,status,channel${ownerScope(ctx)}`);
-        return { success: true, count: rows.length, campaigns: rows.map((c: any) => ({ id: c.id, name: c.name, status: c.status, channel: c.channel })) };
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const { ok, rows, error } = await recList(ctx.authHeaders, ctx.ownerId, "campaigns", { limit: 50 });
+        if (!ok) return { error: OWNER_RECORDS_MISSING + " (" + error + ")" };
+        return { success: true, count: rows.length, campaigns: rows.map((c: any) => ({ id: c.id, name: c.name, status: c.status, channel: c.ch, recipients: c.recipientCount, sent: c.sentCount })) };
+      }
+      case "create_goal": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const metric = ["revenue", "jobs", "clients", "recurringClients", "leads"].includes(input.metric) ? input.metric : "custom";
+        const goal = { id: crypto.randomUUID(), category: input.category || (metric === "custom" ? "personal" : "business"), label: input.label, text: input.label, target: Number(input.target) || 0, current: 0, unit: input.unit || (metric === "revenue" ? "$" : metric === "custom" ? "" : metric), metric, deadline: input.deadline || undefined, rewardDescription: input.rewardDescription || undefined, done: false, createdAt: new Date().toISOString() };
+        const r = await recPut(ctx.authHeaders, ctx.ownerId, "goals", goal);
+        if (!r.ok) return { error: OWNER_RECORDS_MISSING + " (" + r.error + ")" };
+        return { success: true, goalId: goal.id, label: goal.label, target: goal.target, metric };
+      }
+      case "get_accountability_summary": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const days = Math.max(1, Math.min(60, Number(input.days) || 7));
+        const since = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+        const [ent, wn] = await Promise.all([recList(ctx.authHeaders, ctx.ownerId, "accountability", { limit: 400 }), recList(ctx.authHeaders, ctx.ownerId, "wins", { limit: 200 })]);
+        if (!ent.ok) return { error: OWNER_RECORDS_MISSING + " (" + ent.error + ")" };
+        const recent = ent.rows.filter((e: any) => (e.date || "") >= since);
+        const avg = (k: string) => recent.length ? Math.round((recent.reduce((s2: number, e: any) => s2 + (Number(e[k]) || 0), 0) / recent.length) * 10) / 10 : null;
+        const dates = new Set(ent.rows.map((e: any) => e.date));
+        let streak = 0; for (let i = 0; i < 365; i++) { const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10); if (dates.has(d)) streak++; else if (i > 0) break; }
+        return { success: true, days, checkInsLogged: recent.length, streakDays: streak, checkedInToday: dates.has(today()), averages: { sleepHours: avg("sleep"), waterOz: avg("water"), steps: avg("steps"), workoutMinutes: avg("gymMinutes"), mood: avg("mood") }, workoutDays: recent.filter((e: any) => (Number(e.gymMinutes) || 0) > 0 || e.gym).length, notes: recent.filter((e: any) => e.notes).slice(0, 5).map((e: any) => `${e.date}: ${e.notes}`), wins: wn.ok ? wn.rows.filter((w: any) => (w.date || "") >= since).map((w: any) => w.text) : [] };
+      }
+      case "list_goals": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const { ok, rows, error } = await recList(ctx.authHeaders, ctx.ownerId, "goals", { limit: 50 });
+        if (!ok) return { error: OWNER_RECORDS_MISSING + " (" + error + ")" };
+        return { success: true, goals: rows.map((g: any) => ({ label: g.label || g.text, target: g.target, current: g.current, unit: g.unit, deadline: g.deadline, done: !!g.done })) };
+      }
+      // ─── Many at once ─────────────────────────────────────────────────────
+      case "schedule_jobs_bulk": {
+        const list: any[] = Array.isArray(input.jobs) ? input.jobs : [];
+        if (!list.length) return { error: "jobs required" };
+        if (list.length > 200) return { error: "That's more than 200 jobs in one go — split it into a few messages." };
+        const results: string[] = [];
+        let ok = 0, failed = 0;
+        for (const j of list) {
+          let cust = await findCustomerByName(ctx, j.customerName);
+          if (!cust && (j.customerPhone || j.customerAddress)) {
+            const [firstName, ...rest] = String(j.customerName || "").trim().split(/\s+/);
+            const created: any = await executeToolCore(ctx, "create_customer", { firstName, lastName: rest.join(" "), phone: j.customerPhone, address: j.customerAddress });
+            if (created?.success) cust = await findCustomerByName(ctx, j.customerName);
+          }
+          if (!cust) { failed++; results.push(`✗ ${j.customerName}: not in the CRM (give a phone or address to add them)`); continue; }
+          const out: any = await executeToolCore(ctx, "schedule_job", { ...j, customerName: `${cust.firstName || ""} ${cust.lastName || ""}`.trim() });
+          if (out?.success) {
+            ok++;
+            if (j.amount && out.jobId) await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(out.jobId)}`, { method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ amount: Number(j.amount) }) }).catch(() => {});
+            if (j.customerAddress && out.jobId) await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(out.jobId)}`, { method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ address: j.customerAddress }) }).catch(() => {});
+            results.push(`✓ ${out.customer} ${out.date}${j.time ? " " + j.time : ""}`);
+          } else { failed++; results.push(`✗ ${j.customerName}: ${out?.error || "failed"}`); }
+        }
+        return { success: failed === 0, scheduled: ok, failed, results };
+      }
+      case "create_customers_bulk": {
+        const list: any[] = Array.isArray(input.customers) ? input.customers : [];
+        if (!list.length) return { error: "customers required" };
+        const results: string[] = [];
+        let added = 0, existed = 0, failed = 0;
+        for (const c of list) {
+          const out: any = await executeToolCore(ctx, "create_customer", c);
+          const nm = `${c.firstName || ""} ${c.lastName || ""}`.trim();
+          if (!out?.success) { failed++; results.push(`✗ ${nm}: ${out?.error || "failed"}`); continue; }
+          if (out.note) existed++; else added++;
+          const extra: Record<string, unknown> = {};
+          if (c.notes) extra.notes = c.notes;
+          if (Array.isArray(c.tags) && c.tags.length) extra.tags = c.tags;
+          if (c.birthday) extra.birthday = c.birthday;
+          if (Object.keys(extra).length && out.customerId) await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(out.customerId)}`, { method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(extra) }).catch(() => {});
+          results.push(`${out.note ? "=" : "✓"} ${nm}`);
+        }
+        return { success: failed === 0, added, alreadyExisted: existed, failed, results };
+      }
+      case "update_customers_bulk": {
+        const list: any[] = Array.isArray(input.updates) ? input.updates : [];
+        if (!list.length) return { error: "updates required" };
+        const results: string[] = [];
+        let ok = 0, failed = 0;
+        for (const u of list) {
+          const cust = await findCustomerByName(ctx, u.customerName);
+          if (!cust) { failed++; results.push(`✗ ${u.customerName}: not found`); continue; }
+          const full = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(cust.id)}&select=notes,tags`))[0] || {};
+          const patch: Record<string, unknown> = {};
+          for (const f of ["phone", "email", "address", "birthday", "company"]) if (u[f]) patch[f] = u[f];
+          if (u.addNote) patch.notes = [full.notes, u.addNote].filter(Boolean).join("\n");
+          if (Array.isArray(u.addTags) && u.addTags.length) patch.tags = Array.from(new Set([...(Array.isArray(full.tags) ? full.tags : []), ...u.addTags]));
+          if (!Object.keys(patch).length) { results.push(`= ${u.customerName}: nothing to change`); continue; }
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(cust.id)}`, { method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(patch) });
+          const rows = await res.json().catch(() => []);
+          if (res.ok && Array.isArray(rows) && rows.length) { ok++; results.push(`✓ ${u.customerName}: ${Object.keys(patch).join(", ")}`); }
+          else { failed++; results.push(`✗ ${u.customerName}: ${(rows as any)?.message || "didn't save"}`); }
+        }
+        return { success: failed === 0, updated: ok, failed, results };
+      }
+      // ─── Money documents ──────────────────────────────────────────────────
+      case "log_expenses": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const list: any[] = Array.isArray(input.expenses) ? input.expenses : [];
+        if (!list.length) return { error: "expenses required" };
+        let saved = 0;
+        const errs: string[] = [];
+        for (const e of list) {
+          const row = { id: crypto.randomUUID(), date: e.date || today(), description: e.description, amount: Math.abs(Number(e.amount) || 0), category: e.category || "Other", vendor: e.vendor || "", isBusiness: true, isDeductible: true, source: "alfred" };
+          const r = await recPut(ctx.authHeaders, ctx.ownerId, "expenses", row);
+          if (r.ok) saved++; else errs.push(r.error || "failed");
+        }
+        if (!saved) return { error: OWNER_RECORDS_MISSING + " (" + errs[0] + ")" };
+        return { success: true, saved, failed: list.length - saved, total: list.reduce((s, e) => s + Math.abs(Number(e.amount) || 0), 0) };
+      }
+      case "prepare_import_from_file": {
+        return await prepareImportFromFile(ctx, input || {});
+      }
+      case "run_import": {
+        return await runTextImport(ctx, input?.planId ? String(input.planId) : undefined);
+      }
+      case "import_financial_document": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const doc = await readFinancialDocument(ctx, String(input.fileUrl || ""), String(input.fileType || ""), String(input.hint || ""));
+        if ("error" in doc) return { error: doc.error };
+        const expenses = (doc.items || []).filter((i: any) => i.kind === "expense" && Number(i.amount));
+        const income = (doc.items || []).filter((i: any) => i.kind === "income" && Number(i.amount));
+        let expSaved = 0, incSaved = 0;
+        for (const e of expenses) {
+          const r = await recPut(ctx.authHeaders, ctx.ownerId, "expenses", { id: crypto.randomUUID(), date: e.date || doc.date || today(), description: e.description || doc.vendor || "Expense", amount: Math.abs(Number(e.amount)), category: e.category || "Other", vendor: e.vendor || doc.vendor || "", isBusiness: true, isDeductible: true, source: "alfred-document", receiptUrl: input.fileUrl });
+          if (r.ok) expSaved++;
+        }
+        for (const i of income) {
+          const r = await sbWrite(ctx, "manual_budget_entries", "POST", { id: crypto.randomUUID(), kind: "income", category: i.category || "revenue", label: i.description || "Income", amount: Math.abs(Number(i.amount)), date: i.date || doc.date || today() });
+          if (r.ok) incSaved++;
+        }
+        if (doc.taxNotes) await sbWrite(ctx, "alfred_memory", "POST", { id: crypto.randomUUID(), text: `Tax info (${doc.documentType || "document"}${doc.date ? ", " + doc.date : ""}): ${doc.taxNotes}`, category: "finance", created_at: new Date().toISOString() }).catch(() => null);
+        return {
+          success: true, documentType: doc.documentType, vendor: doc.vendor, date: doc.date,
+          expensesSaved: expSaved, expensesTotal: expenses.reduce((s: number, e: any) => s + Math.abs(Number(e.amount)), 0),
+          incomeSaved: incSaved, incomeTotal: income.reduce((s: number, e: any) => s + Math.abs(Number(e.amount)), 0),
+          taxNotesSaved: !!doc.taxNotes, summary: doc.summary,
+          note: expenses.length && !expSaved ? OWNER_RECORDS_MISSING : undefined,
+        };
       }
       case "list_social_posts": {
         const rows = await sbGet(ctx, `social_posts?select=id,caption,status,scheduledAt${ownerScope(ctx)}&order=scheduledAt.desc&limit=20`);
@@ -1969,8 +2581,8 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         const cust = await findCustomerByName(ctx, input.customerName);
         if (!cust) return { error: `No customer found matching "${input.customerName}".` };
         const patch: Record<string, unknown> = {};
-        for (const f of ["phone", "email", "address", "notes"] as const) if (input[f] !== undefined) patch[f] = input[f];
-        if (Object.keys(patch).length === 0) return { error: "Nothing to update — provide at least one of phone/email/address/notes." };
+        for (const f of ["phone", "email", "address", "notes", "birthday", "company"] as const) if (input[f] !== undefined) patch[f] = input[f];
+        if (Object.keys(patch).length === 0) return { error: "Nothing to update — provide at least one of phone/email/address/notes/birthday/company." };
         const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(cust.id)}`, {
           method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify(patch),
@@ -2771,6 +3383,8 @@ export const runAlfredSmsAgent = async (
   incomingText: string
 ): Promise<string> => {
   ctx.modelKeys = modelKeys;
+  ctx.turnStartedAt = Date.now();
+  ctx.directSendsThisTurn = 0;
   // Same ordering rule as the in-app Alfred (AlfredPage.tsx FIX 20):
   // modelPriority is the real order, activeModel is only consulted as a
   // fallback when no priority list is saved — activeModel does not jump
@@ -2844,13 +3458,25 @@ CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned 
 
 CUSTOMER FILES AND CARDS: "do we have the file/paperwork for X" or "what's on file for X" → get_customer_documents. "Text me the [file] for X" → get_customer_documents first if you don't already know the exact name, then text_me_document — this sends a REAL MMS attachment straight to the owner's own phone, not a description of the file. "What's the card info for X" / "do they have a card on file" → get_customer_card_info — this ONLY ever returns brand + last 4 digits (e.g. "Visa ····4242"); the full card number is never stored anywhere in this app and cannot be retrieved by you or anyone else, so never imply you could get more than that.
 
-RECEIVING A PHOTO OR PDF: when the owner texts a photo or PDF, the file has ALREADY been uploaded and saved somewhere safe by the time you see this conversation — the message will contain a line like "[Attached file ready to save — url: ..., type: ..., fileName: ...]". If they said which client it's for ("upload this to the Millers"), call attach_file_to_customer right away with that exact url. If they didn't say who it's for, ask which customer before attaching — never guess a customer for a file. Never claim you "can't see" or "can't process" an attached photo/PDF — you always can via this tool; the only reason to not attach it immediately is not knowing which customer it belongs to.
+RECEIVING A PHOTO OR PDF: when the owner texts a photo or PDF, the file has ALREADY been uploaded and saved somewhere safe by the time you see this conversation — the message will contain a line like "[Attached file ready to save — url: ..., type: ..., fileName: ...]". If it's a receipt, bill, statement, revenue report or tax form (from the caption or because that's clearly what it is), it's a money document — see MONEY DOCUMENTS. If they said which client it's for ("upload this to the Millers"), call attach_file_to_customer right away with that exact url. If they didn't say who it's for and it isn't a money document, ask which customer before attaching — never guess a customer for a file. Never claim you "can't see" or "can't process" an attached photo/PDF — you always can via this tool; the only reason to not attach it immediately is not knowing which customer it belongs to.
 
 WHAT CAN YOU DO: if the owner asks what you can do / your capabilities / what you're able to help with, call list_capabilities and answer from that — don't describe your abilities from memory, since the real tool list is the source of truth.
 
 NEVER REFUSE TO SEND A MESSAGE: if text_customer comes back "No customer found matching..." because the person the owner named isn't in the CRM at all (a lead, a job applicant, a personal contact, anyone), do NOT just report that as a dead end. Ask for their phone number if you don't already have it, then call text_phone_number — it sends to any phone number directly, no customer record required. The owner has full authority to send any message to anyone through their own business number. The only reason to not send something is missing the actual phone number or the exact wording — ask for whichever is missing, then send it.
 
-MASS MESSAGING — real power, use it carefully: notify_all_customers texts EVERY eligible customer at once (optionally narrowed by tag) — this is a real, immediate send to real people, not a draft. Use it for broadcast requests like "let everyone know I'm running late today", "tell my customers about the weather closure", or "send a promo to my whole list". Always confirm you have the FULL exact wording before calling it if the owner was vague ("send something to everyone" — ask what it should say, don't invent business content on their behalf). create_promotion sets up a tracked discount code but does NOT send anything by itself — for "create a promo and send it out", call create_promotion first, then notify_all_customers with a message that includes the returned code, in the same reply.
+TEXTING MANY CUSTOMERS — ALWAYS A CONVERSATION, NEVER IN ONE SHOT: anything going to more than 2 people goes through prepare_bulk_text (a DRAFT — nothing is sent, the campaign appears in the CRM's Campaigns page), then you text the owner the numbered list + a sample of the message and ask which to send to ("all", "not 3 and 7", "only 1, 2, 5"). STOP there. Only after their reply do you call send_bulk_text with their choices and their approval quoted — the server refuses a draft made in the same message. If they change the wording or the audience, prepare a new draft and ask again. If the owner was vague about wording ("send something to everyone"), ask what it should say first — don't invent business content. Never work around this by sending one text_customer at a time (more than 3 per message is refused). create_promotion only makes a discount code — put the code in the bulk text's message.
+
+WATCHING FOR REPLIES: when a bulk text asks customers something (their birthday, email, address, a yes/no), pass watchReplies to prepare_bulk_text — question + which customer field to save to (+ an optional thank-you). From then on every answer that comes in is read, saved to that customer's file automatically, and the owner gets a running digest; list_reply_watches shows who answered. For "ask everyone their birthday and give them a coupon on their birthday": prepare_bulk_text (onlyMissing "birthday", watchReplies saveField "birthday"), then set_birthday_offer with the percent and how long it's good for — that one runs every morning on its own and texts each birthday customer their own coupon code.
+
+MANY THINGS IN ONE MESSAGE: when the owner sends a long list (e.g. 50 customers, each with their own date/instructions), use the bulk tools — schedule_jobs_bulk (one entry per job, with each one's own date, time, crew, notes, checklist, tags, recurring), create_customers_bulk, update_customers_bulk — in as few calls as possible, carrying every detail they gave for each one. Don't drop or merge per-customer instructions, don't ask them to send it in pieces, and don't stop halfway: keep calling tools until every item is done, then report the totals plus any that failed by name.
+
+CAMPAIGNS AND GOALS: create_campaign puts a draft/scheduled campaign in the CRM's Campaigns page; create_goal puts a goal in the Goals page (business metrics like revenue/jobs/clients track themselves). Never say you created one unless the tool returned success — if it says the records table isn't set up, tell the owner exactly that.
+
+WHOLE-CRM QUESTIONS: you can scan every customer at once — never say you can only check names the owner gives you. Duplicates → find_duplicate_customers. "Do I have anyone like…" → search_customers. "Who's missing info" → customers_missing_info. "Customers who / in / with …" → filter_customers. Text the count first, then the names (keep it short; offer to text the full list).
+
+PERSONAL VS. BUSINESS: while the owner is working through business (jobs, customers, quotes, scheduling), stay on it — don't drift into sleep, workouts, mood or personal reminders. get_accountability_summary is for check-ins, the morning briefing, reflections, or when they ask. Personal reminders ("remind me to call Mom Sunday at 6") use set_reminder like any reminder.
+
+MONEY DOCUMENTS: when the owner sends a photo, screenshot or PDF of a receipt, bill, bank/card statement, revenue report or tax paperwork, call import_financial_document with its url — expenses land in Expenses, income in Budget, tax figures are remembered. Report what was imported (counts and totals). Spoken/typed expenses → log_expenses.
 
 You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), save persistent "from now on" instructions that apply to every future conversation (set_standing_preference — see above), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual service job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), message many customers at once or run a promotion (notify_all_customers, create_promotion — see above), and turn on automatically texting a review-request link a couple days after a job's marked complete (enable_review_request_automation — a real deterministic automation, not something you have to remember to do yourself each time). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Quotes can require a deposit — pass depositPercent or depositAmount to create_estimate, or change one on an existing quote with set_estimate_deposit; never say deposits aren't supported. Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.
 
@@ -2875,7 +3501,7 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
   // A hard wall-clock budget, checked before every round/model, means we
   // always bail out with SOMETHING (built from stepLog) well before that
   // ceiling, instead of gambling the entire reply on finishing in time.
-  const overallDeadline = Date.now() + 75_000;
+  const overallDeadline = Date.now() + 85_000;
 
   // Try each configured provider in priority order — a failure (bad key,
   // provider outage, timeout) falls through to the next one instead of
@@ -2909,7 +3535,7 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
     // and the real reply goes out as its own follow-up text once ready,
     // not as the webhook response itself.
     let ranOutOfTime = false;
-    while (rounds < 10) {
+    while (rounds < 16) {
       if (Date.now() > overallDeadline) { ranOutOfTime = true; break; }
       rounds++;
       // A hung provider call (no error, no response) would otherwise burn
@@ -2917,7 +3543,9 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
       // call so a stuck round fails fast and falls over to the next model
       // instead of the SMS just never arriving with no clue why.
       const controller = new AbortController();
-      const abortTimer = setTimeout(() => controller.abort(), 12000);
+      // 45s, not 12s: a reply that carries 50 jobs in one tool call takes
+      // a while to write.
+      const abortTimer = setTimeout(() => controller.abort(), 45000);
       try {
         const result = await Promise.race([
           callSmsModel(modelKey, apiKey, systemPrompt, convMessages, def.supportsTools ? TOOLS : []),

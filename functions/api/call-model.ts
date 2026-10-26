@@ -34,7 +34,7 @@ const MODELS: Record<string, ModelDef> = {
   nvidia_kimi: { modelId: "deepseek-ai/deepseek-v4.1-flash", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   nvidia_nemotron: { modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   nvidia_muse: { modelId: "meta/muse-glimmer-30b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  nvidia_deepseek_r1: { modelId: "moonshotai/kimi-k3", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
+  nvidia_deepseek_r1: { modelId: "moonshotai/kimi-k2.6", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   nvidia_qwen: { modelId: "nvidia/nemotron-3-super-120b-a12b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   openrouter: { modelId: "nvidia/nemotron-3-super-120b-a12b:free", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1/chat/completions" },
   cerebras: { modelId: "gpt-oss-120b", provider: "cerebras", endpoint: "https://api.cerebras.ai/v1/chat/completions" },
@@ -151,6 +151,24 @@ const safeFetch = async (url: string, opts: RequestInit, timeoutMs = 25000): Pro
 
 const json = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 
+// BUG FIX (user report — a big trash-can client import sent to Alfred
+// failed with "Request to integrate.api.nvidia.com timed out"). Every text
+// request got the same 20-25s limit, but a long pasted list plus Alfred's
+// full tool list can take a free NVIDIA/OpenRouter model well over a
+// minute to answer. The limit now grows with the size of the request
+// (45s for a normal message, up to 110s for a very large one). Waiting on
+// the provider costs no Worker CPU time, so this only changes how long a
+// genuinely dead provider takes to be given up on.
+const requestTimeoutMs = (body: { systemPrompt?: string; messages: unknown; tools?: unknown[] }) => {
+  const size = (body.systemPrompt || "").length + JSON.stringify(body.messages || []).length + JSON.stringify(body.tools || []).length;
+  return Math.min(110000, 45000 + Math.floor(size / 1000) * 1000);
+};
+
+// Same NVIDIA key works for every model on build.nvidia.com, so when the
+// chosen one times out or is overloaded, a faster one gets the same request
+// before Alfred moves on to a different provider.
+const NVIDIA_FALLBACKS = ["nvidia/nemotron-3.5-lightning-30b-a3b", "deepseek-ai/deepseek-v4.1-flash"];
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceRoleKey) return json({ error: "Server missing SUPABASE_SERVICE_ROLE_KEY env var." }, 500);
@@ -178,7 +196,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
         body: JSON.stringify(reqBody),
-      });
+      }, requestTimeoutMs(body));
       const text = data.content?.find((b: any) => b.type === "text")?.text ?? "";
       const toolUses = (data.content ?? []).filter((b: any) => b.type === "tool_use").map((b: any) => ({ id: b.id, name: b.name, input: b.input ?? {} }));
       return json({ text, toolUses, stopReason: data.stop_reason ?? "end_turn", raw: data.content });
@@ -234,7 +252,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           generationConfig: { maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
           ...(body.systemPrompt ? { systemInstruction: { parts: [{ text: body.systemPrompt }] } } : {}),
         }),
-      });
+      }, requestTimeoutMs(body));
       const parts = data.candidates?.[0]?.content?.parts ?? [];
       const text = parts.filter((p: any) => typeof p.text === "string" && p.text).map((p: any) => p.text).join("");
       const toolUses = parts.filter((p: any) => p.functionCall).map((p: any) => ({ id: p.functionCall.name, name: p.functionCall.name, input: p.functionCall.args ?? {} }));
@@ -321,16 +339,21 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const live = await getOpenRouterFreeModels();
         modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
       }
+    } else if (def.provider === "nvidia" && !hasImageBlock(body.messages)) {
+      modelCandidates = Array.from(new Set([def.modelId, ...NVIDIA_FALLBACKS]));
     } else modelCandidates = [def.modelId];
 
     const isVisionRequest = def.provider === "openrouter" && hasImageBlock(body.messages);
-    const perCandidateTimeoutMs = isVisionRequest ? 12000 : 20000;
+    // Text: the chosen model gets the full size-based time; each fallback a
+    // shorter, fixed slice so trying them all still ends in reasonable time.
+    const firstTimeoutMs = isVisionRequest ? 12000 : requestTimeoutMs(body);
+    const fallbackTimeoutMs = isVisionRequest ? 12000 : (modelCandidates.length > 3 ? 20000 : 40000);
     let data: any;
     let lastErr: unknown;
-    for (const candidateModel of modelCandidates) {
+    for (const [ci, candidateModel] of modelCandidates.entries()) {
       const openAiBody = JSON.stringify({ model: candidateModel, max_tokens: maxTokens, messages: openAiMessages, ...(openAiTools ? { tools: openAiTools } : {}) });
       try {
-        data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }, perCandidateTimeoutMs);
+        data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }, ci === 0 ? firstTimeoutMs : fallbackTimeoutMs);
         lastErr = undefined;
         break;
       } catch (err: any) {
@@ -340,10 +363,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // Everything else (404, overloaded, 500/503, timed out) is exactly
         // the kind of per-model flakiness this fallback list exists for.
         if ((err?.status === 401 || err?.status === 402 || err?.status === 403) || modelCandidates.length <= 1) throw err;
+        // NVIDIA: only move to another model when this one was slow or
+        // overloaded — a bad request (400) would fail the same way on all.
+        if (def.provider === "nvidia" && !(/timed out/i.test(err?.message || "") || err?.status === 429 || (err?.status || 0) >= 500)) throw err;
         continue;
       }
     }
-    if (!data) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    if (!data) {
+      if (def.provider === "nvidia" && /timed out/i.test((lastErr as any)?.message || "")) {
+        throw new Error(`NVIDIA didn't answer in time (tried ${modelCandidates.length} of its models). Its free models get slow when busy — try again, or add a second provider (Gemini, Groq, Claude…) in Settings → AI Models so Alfred can switch automatically.`);
+      }
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    }
     const choice = data.choices?.[0]?.message;
     const text = choice?.content ?? "";
     const toolUses = (choice?.tool_calls ?? []).map((tc: any) => ({ id: tc.id, name: tc.function?.name ?? "", input: (() => { try { return JSON.parse(tc.function?.arguments || "{}"); } catch { return {}; } })() }));

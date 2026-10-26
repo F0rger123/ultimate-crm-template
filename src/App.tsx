@@ -11,12 +11,14 @@ import {
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
 import { usePersistent } from "./hooks/usePersistent";
 import { usePersistentRaw } from "./hooks/usePersistentRaw";
+import { useCloudCollection } from "./hooks/useCloudCollection";
 import { usePollGate } from "./hooks/usePollGate";
 import { useAutomationEngine } from "./hooks/useAutomationEngine";
 import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase, clearLocalAuthSession, isPublicCustomerHash } from "./lib/supabase";
 import { saveCustomersTolerant } from "./lib/customerImport";
+import { fetchAllRows } from "./lib/dbBulk";
 import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL, type PlatformSubscription } from "./lib/planLimits";
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -1164,8 +1166,9 @@ export function App() {
   // Fix: persist deleted ids to localStorage too (a small tombstone list),
   // so a stale snapshot from days/weeks ago still gets filtered before that
   // very first push, not just within the current tab's session.
-  const TOMBSTONE_MAX = 500;
-  const persistTombstones = useCallback((table: "estimates" | "customers", ids: string[]) => {
+  // Big enough for a bulk delete of every customer an account can hold.
+  const TOMBSTONE_MAX = 20000;
+  const persistTombstones = useCallback((table: "estimates" | "customers" | "jobs", ids: string[]) => {
     if (ids.length === 0) return;
     try {
       const key = `crm.deleted.${table}`;
@@ -1174,7 +1177,7 @@ export function App() {
       localStorage.setItem(key, JSON.stringify(merged));
     } catch { /* localStorage unavailable — in-memory guards still apply */ }
   }, []);
-  const readTombstones = (table: "estimates" | "customers"): Set<string> => {
+  const readTombstones = (table: "estimates" | "customers" | "jobs"): Set<string> => {
     try { return new Set(JSON.parse(localStorage.getItem(`crm.deleted.${table}`) || "[]")); }
     catch { return new Set(); }
   };
@@ -1183,7 +1186,7 @@ export function App() {
     const now = Date.now();
     for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
     ids.forEach(id => m.set(id, now));
-    if (table === "estimates" || table === "customers") persistTombstones(table, ids);
+    if (table === "estimates" || table === "customers" || table === "jobs") persistTombstones(table, ids);
   }, [persistTombstones]);
   // Undoing a delete restores the row — it must stop being treated as
   // "recently deleted" or the next refetch would just filter the restore
@@ -1299,9 +1302,11 @@ export function App() {
   // fetch actually failed, rather than silently keeping stale cached data
   // with no visible signal that a refresh attempt just failed.
   const [crewFetchError, setCrewFetchError] = useState(false);
-  const [vehicles,        setVehicles]        = usePersistent<Vehicle[]>("crm.vehicles", seedVehicles);
-  const [maintenance,     setMaintenance]     = usePersistent<MaintenanceRecord[]>("crm.maintenance", seedMaintenance);
-  const [expenses,        setExpenses]        = usePersistent<Expense[]>("crm.expenses", seedExpenses);
+  // Synced to Supabase owner_records (see hooks/useCloudCollection.ts) so
+  // they match on every device and text-Alfred can add to them.
+  const [vehicles,        setVehicles]        = useCloudCollection<Vehicle & { id: string }>("vehicles", "crm.vehicles", seedVehicles, crmUserId);
+  const [maintenance,     setMaintenance]     = useCloudCollection<MaintenanceRecord & { id: string }>("maintenance", "crm.maintenance", seedMaintenance, crmUserId);
+  const [expenses,        setExpenses]        = useCloudCollection<Expense & { id: string }>("expenses", "crm.expenses", seedExpenses, crmUserId);
   const [chemicals,       setChemicals]       = usePersistent<Chemical[]>("crm.chemicals", seedChemicals);
   const [services,        setServices]        = usePersistent<Service[]>("crm.services", seedServices);
   // FEATURE — "add more default services." seedServices only seeds a BRAND
@@ -1320,7 +1325,7 @@ export function App() {
       return [...(prev || []), ...missing];
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [campaigns,       setCampaigns]       = usePersistent<Campaign[]>("crm.campaigns", []);
+  const [campaigns,       setCampaigns]       = useCloudCollection<Campaign & { id: string }>("campaigns", "crm.campaigns", [], crmUserId);
   const [automations,     setAutomations]     = usePersistent<Automation[]>("crm.automations", seedAutomations);
   const [trainingModules, setTrainingModules] = usePersistent<TrainingModule[]>("crm.trainingModules", []);
   const [reviews,         setReviews]         = usePersistent<Review[]>("crm.reviews", []);
@@ -1342,9 +1347,9 @@ export function App() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [inboxThreads,    setInboxThreads]    = usePersistent<InboxThread[]>("crm.inbox", []);
-  const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("crm.accountability", []);
-  const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("crm.goals", []);
-  const [wins,            setWins]            = usePersistent<Win[]>("crm.wins", []);
+  const [accountability,  setAccountability]  = useCloudCollection<AccountabilityEntry & { id: string }>("accountability", "crm.accountability", [], crmUserId);
+  const [goalsList,       setGoalsList]       = useCloudCollection<Goal & { id: string }>("goals", "crm.goals", [], crmUserId);
+  const [wins,            setWins]            = useCloudCollection<Win & { id: string }>("wins", "crm.wins", [], crmUserId);
   const [negativeAlerts,  setNegativeAlerts]  = usePersistent<Review[]>("crm.negativeAlerts", []);
   const [referrals,       setReferrals]       = usePersistent<typeof seedReferrals>("crm.referrals", seedReferrals);
   const [promotions,      setPromotions]      = usePersistent<import("./types").Promotion[]>("crm.promotions", []);
@@ -2152,6 +2157,23 @@ export function App() {
     }
     invoiceActivityRef.current = snapshot;
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
+    // BUG FIX — "a bunch of invoice-paid notices at once, super delayed."
+    // When this tab catches up on data it hadn't seen (opened after a few
+    // days, or a full refresh after the 1,000-row fix) every past payment
+    // looked "new". Only events that actually happened in the last two
+    // hours are announced; older ones just update silently.
+    const byId = new Map((estimates as any[]).map(e => [e.id, e]));
+    const eventTime = (ev: { id: string }): string | null => {
+      const [id, kind] = ev.id.split(":"); const e: any = byId.get(id); if (!e) return null;
+      if (kind === "paid") { const log = Array.isArray(e.paymentLog) ? e.paymentLog.filter((x: any) => x?.type === "paid" && x?.at) : []; return log.length ? log[log.length - 1].at : e.paidAt || null; }
+      return ({ viewed: e.clientViewedAt, disputed: e.disputedAt, refunded: e.refundedAt, failed: e.paymentFailedAt, rejected: e.declinedAt, approved: e.signedAt } as any)[kind] || null;
+    };
+    const isFresh = (ev: { id: string }) => {
+      const t = eventTime(ev); if (!t) return true;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t === today();
+      const ms = Date.parse(t); return Number.isNaN(ms) || Date.now() - ms < 2 * 3600 * 1000;
+    };
+    for (let i = newEvents.length - 1; i >= 0; i--) if (!isFresh(newEvents[i])) newEvents.splice(i, 1);
     if (newEvents.length) {
       newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
       setNotifications((prev: AppNotification[]) => [...newEvents.map(ev => ({ ...ev, read: false, category: "invoice" as const, page: ev.invoiced ? "invoices" : "estimates", openType: ev.invoiced ? "invoice" : "estimate", openId: ev.openId })), ...prev].slice(0, NOTIFICATIONS_CAP));
@@ -2186,30 +2208,10 @@ export function App() {
           const html = emailShell(settings as any, "Quote Update", `<p>${ev.text}</p>` + emailButton("View Estimate", linkTo("estimates", estId)));
           sendEmail(settings as any, { to: ownerEmail, subject: "Quote update — " + ((settings as any)?.companyName || "CRM Starter"), body: html }).catch(() => {});
         });
-        // ISSUE 11 (round 11) — getting paid was the one invoice event that
-        // DIDN'T email the owner (only approved/rejected quotes did) despite
-        // being the most important one to not miss if their CRM tab isn't
-        // open. Branded (emailShell) + routed through the owner's own
-        // connected Gmail, matching every other in-app automated send.
-        newEvents.filter(ev => ev.id.endsWith(":paid")).forEach(ev => {
-          const estId = ev.id.split(":")[0];
-          const html = emailShell(settings as any, "Invoice Paid", `<p>${ev.text.replace("💰 ", "")}</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
-          sendOwnerGmailOnly(settings as any, ownerEmail, "💰 Invoice paid — " + ((settings as any)?.companyName || "CRM Starter"), html).catch(() => {});
-        });
-        // AUDIT (round 12) — refunds and disputes are the two highest-stakes
-        // payment events (real money leaving the account, or a chargeback
-        // clock running) and previously had no owner email at all — a bell/
-        // toast only reaches someone with the CRM tab open.
-        newEvents.filter(ev => ev.id.endsWith(":refunded")).forEach(ev => {
-          const estId = ev.id.split(":")[0];
-          const html = emailShell(settings as any, "Invoice Refunded", `<p>${ev.text.replace("↩️ ", "")}</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
-          sendOwnerGmailOnly(settings as any, ownerEmail, "↩️ Invoice refunded — " + ((settings as any)?.companyName || "CRM Starter"), html).catch(() => {});
-        });
-        newEvents.filter(ev => ev.id.endsWith(":disputed")).forEach(ev => {
-          const estId = ev.id.split(":")[0];
-          const html = emailShell(settings as any, "Payment Dispute", `<p>${ev.text.replace("🚨 ", "")}</p><p>Disputes have a short response window — check your Stripe dashboard for evidence submission.</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
-          sendOwnerGmailOnly(settings as any, ownerEmail, "🚨 Payment dispute opened — " + ((settings as any)?.companyName || "CRM Starter"), html).catch(() => {});
-        });
+        // Paid / refunded / disputed emails (and a phone push) are sent by
+        // the server the moment the payment is recorded — functions/api/
+        // _lib/ownerNotify.ts — not from here, where they only went out
+        // whenever this tab happened to notice, once per open device.
       }
     }
   }, [estimates, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3101,9 +3103,10 @@ export function App() {
       const RECENT_MS = 30 * 60 * 1000;
       const isRecentRow = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
       const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }, { data: sbChemicals }] = await Promise.all([
-        (supabase as any).from("jobs").select("*").eq("owner_id", crmUserId),
-        (supabase as any).from("customers").select("*").eq("owner_id", crmUserId),
-        (supabase as any).from("estimates").select("*").eq("owner_id", crmUserId),
+        // All rows, 1,000 per request (the server's page cap) — see lib/dbBulk.ts.
+        fetchAllRows("jobs", "*", crmUserId),
+        fetchAllRows("customers", "*", crmUserId),
+        fetchAllRows("estimates", "*", crmUserId),
         (supabase as any).from("promotions").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
         (supabase as any).from("reviews").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch((e: any) => ({ data: null, error: e })),
         // FEATURE — Inventory & Equipment used to be localStorage-only, so
@@ -3325,7 +3328,24 @@ export function App() {
           // to strip like crew/crewAssignedAt above rather than normalize.
           "crewGoogleEventIds",
         ] as const;
-        const safeJobs = jobs.map(j => {
+        // BUG FIX — "deleted work orders come back." This pushed EVERY job
+        // in this tab's memory every 30s, so a tab (or phone) that still had
+        // a job deleted elsewhere re-created it. Only push jobs the server
+        // still has (edits) or brand-new local ones never seen there — never
+        // one this tab knows was deleted, or one that vanished from the
+        // server after this tab had confirmed it.
+        const live = await fetchAllRows("jobs", "id", crmUserId);
+        if (!live.data) return; // can't tell new from deleted — skip this cycle
+        const liveJobIds = new Set(live.data.map((r: any) => r.id));
+        const deletedJobIds = readTombstones("jobs");
+        const recentlyDeletedJobs = recentlyDeletedRef.current.jobs;
+        // A job never seen on the server only counts as new if it was
+        // created in the last half hour — an old cached copy of a job deleted
+        // on another device is not.
+        const isNewLocal = (j: any) => { const t = Date.parse(j?.createdAt || ""); return !syncedJobIdsRef.current.has(j.id) && !Number.isNaN(t) && Date.now() - t < 30 * 60 * 1000; };
+        const pushable = jobs.filter(j => !deletedJobIds.has(j.id) && !recentlyDeletedJobs.has(j.id) && (liveJobIds.has(j.id) || isNewLocal(j)));
+        if (pushable.length === 0) return;
+        const safeJobs = pushable.map(j => {
           const copy: any = stripLegacyJobFields(j);
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
           copy.owner_id = crmUserId;
@@ -3440,8 +3460,8 @@ export function App() {
       let chemicalSafeIds: Set<string> | null = null;
       try {
         const [{ data: liveEstIds }, { data: liveCustIds }, { data: liveChemIds }] = await Promise.all([
-          (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
-          (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+          fetchAllRows("estimates", "id", crmUserId),
+          fetchAllRows("customers", "id", crmUserId),
           (supabase as any).from("chemicals").select("id").eq("owner_id", crmUserId),
         ]);
         if (Array.isArray(liveEstIds)) estimateSafeIds = new Set(liveEstIds.map((r: any) => r.id));
@@ -3484,9 +3504,16 @@ export function App() {
       // (each already using the real .select("id") + 0-row-check pattern,
       // see docs/ARCHITECTURE.md) is what should update it, never this generic bulk
       // resync blindly overwriting fields it has no way to know are stale.
-      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => !syncedCustomerIdsRef.current.has(c.id) && !customerSafeIds!.has(c.id));
+      // A row this tab never saw on the server only counts as "new" while
+      // it's recent — the same 30-minute rule refetchData uses to keep it.
+      // An older one is a cached copy of something deleted elsewhere (e.g.
+      // a phone still holding a deleted import), and pushing it would bring
+      // it back.
+      const RECENT_PUSH_MS = 30 * 60 * 1000;
+      const recentLocal = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_PUSH_MS; };
+      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => !syncedCustomerIdsRef.current.has(c.id) && !customerSafeIds!.has(c.id) && recentLocal(c));
       await upsertCustomersSafely(safeCustomers, "Customer auto-save");
-      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => !syncedEstimateIdsRef.current.has(e.id) && !estimateSafeIds!.has(e.id));
+      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => !syncedEstimateIdsRef.current.has(e.id) && !estimateSafeIds!.has(e.id) && recentLocal(e));
       if (safeEstimates.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(safeEstimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
@@ -3652,8 +3679,8 @@ export function App() {
       let liveChemIds: Set<string> | null = null;
       try {
         const [{ data: estRows }, { data: custRows }, { data: chemRows }] = await Promise.all([
-          (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
-          (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+          fetchAllRows("estimates", "id", crmUserId),
+          fetchAllRows("customers", "id", crmUserId),
           (supabase as any).from("chemicals").select("id").eq("owner_id", crmUserId),
         ]);
         if (Array.isArray(estRows)) liveEstIds = new Set(estRows.map((r: any) => r.id));
@@ -5863,7 +5890,7 @@ export function App() {
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} autoOpenNewWorkOrder={fabAutoOpenNew === "jobs-workorder"} onAutoOpenNewWorkOrderConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} services={services} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} posts={socialPosts} setPosts={setSocialPosts} />}
-                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} onViewCustomerInCrm={(id: string) => { setAlfredHighlight({ type: "customer", id }); setPage("customers"); }} />)}
+                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} jobs={jobs} estimates={estimates} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} onViewCustomerInCrm={(id: string) => { setAlfredHighlight({ type: "customer", id }); setPage("customers"); }} />)}
                 {page === "campaigns"      && (planBlocked("campaigns") ? <PlanRestrictedNotice label="Campaign Blasts" feature="campaigns" /> : <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />)}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
@@ -5892,7 +5919,7 @@ export function App() {
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} planLimits={planLimits} onUpgrade={openBillingUpgrade} highlightId={alfredHighlight?.type === "employee" ? alfredHighlight.id : null} onHighlightConsumed={() => setAlfredHighlight(null)} />}
                 {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}
-                {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
+                {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} employees={employees} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} toast={toast} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "training"       && <TrainingPage modules={trainingModules} setModules={setTrainingModules} employees={employees} toast={toast} ownerId={crmUserId} />}
@@ -5905,7 +5932,7 @@ export function App() {
                 {page === "goals" && <GoalsPage goals={goalsList} setGoals={setGoalsList} jobs={jobs} customers={customers} estimates={estimates} settings={settings} onOpenSettings={() => setSettingsOpen(true)} toast={toast} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
-                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => queueAlfredSpotlight({ page: "jobs", type: "job", id })} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} />}
+                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => queueAlfredSpotlight({ page: "jobs", type: "job", id })} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>
@@ -5924,7 +5951,7 @@ export function App() {
             only when page==="alfred") so it still gets that exact layout
             treatment; Voice Mode's own overlay/bubble portals straight to
             document.body, so those keep working on every other page too. */}
-        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} onResolveScreenHighlight={resolveScreenHighlight} />}
+        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} entries={accountability} wins={wins} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} onResolveScreenHighlight={resolveScreenHighlight} />}
 
         {/* FEATURE — "highlight it in a glowing red... you mean this?"
             Rendered here (not inside AlfredPage) since it's App.tsx that

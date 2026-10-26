@@ -8,7 +8,7 @@
 // Requirements card for how the field crew sees the photo/video
 // requirements created here.
 import React, { useState } from "react";
-import { ClipboardCheck, Upload, X, Plus, CheckCircle, AlertTriangle, FileText, Camera } from "lucide-react";
+import { ClipboardCheck, Upload, X, Plus, CheckCircle, AlertTriangle, FileText, Camera, Trash2 } from "lucide-react";
 import { fmt, uid, today, compressImageFile, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
 import { callModel, MODELS } from "../../lib/api";
 import { supabase } from "../../lib/supabase";
@@ -36,11 +36,26 @@ const emptyExtracted = (): Extracted => ({
 
 export function WorkOrdersPage({
   jobs = [], setJobs, customers = [], setCustomers, employees = [], settings = {} as AppSettings, toast = (() => {}) as any, ownerId = "",
-  onOpenJob = (_id: string) => {}, onNewWorkOrder = () => {},
+  onOpenJob = (_id: string) => {}, onNewWorkOrder = () => {}, markRecentlyDeleted = (_t: "jobs", _ids: string[]) => {},
 }: {
   jobs?: Job[]; setJobs?: any; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; toast?: any; ownerId?: string;
-  onOpenJob?: (id: string) => void; onNewWorkOrder?: () => void;
+  onOpenJob?: (id: string) => void; onNewWorkOrder?: () => void; markRecentlyDeleted?: (table: "jobs", ids: string[]) => void;
 }) {
+  // A work order is a job row — deleting it removes the job on the server
+  // and marks it deleted so the sync / autosave can't bring it back.
+  const deleteWorkOrder = async (j: any) => {
+    if (!window.confirm(`Delete work order ${j.workOrderNumber ? "#" + j.workOrderNumber : ""} (${j.workOrderClient || j.address || "no client"})? This can't be undone.`)) return;
+    setJobs?.((prev: any[]) => prev.filter((x: any) => x.id !== j.id));
+    markRecentlyDeleted("jobs", [j.id]);
+    try {
+      const { data, error } = await (supabase as any).from("jobs").delete().eq("id", j.id).select("id");
+      if (error) toast("Deleted here, but the server didn't delete it — " + error.message, "red");
+      else if (!data?.length) toast("Deleted here, but the server didn't delete it (it may belong to another account)", "red");
+      else toast("Work order deleted ✓", "green");
+    } catch (e: any) {
+      toast("Deleted here, but the server didn't delete it — " + (e?.message || "unknown error"), "red");
+    }
+  };
   const workOrders = (jobs as any[]).filter(j => j.isWorkOrder);
   const [tab, setTab] = useState<"active" | "needs_review" | "completed">("active");
   const active = workOrders.filter(j => j.status === "scheduled" || j.status === "in_progress");
@@ -227,6 +242,7 @@ export function WorkOrdersPage({
                       : <Badge tone="yellow"><AlertTriangle size={10} className="inline mr-1" />Needs Sign-Off</Badge>
                   )}
                   <Badge tone={j.status === "completed" ? "green" : j.status === "in_progress" ? "yellow" : "blue"}>{(j.status || "").replace("_", " ")}</Badge>
+                  <button onClick={e => { e.stopPropagation(); deleteWorkOrder(j); }} title="Delete work order" className="p-1.5 rounded-lg text-white/40 hover:text-danger-400 hover:bg-brand-900/30 transition"><Trash2 size={14} /></button>
                 </div>
               </div>
             </Glass>

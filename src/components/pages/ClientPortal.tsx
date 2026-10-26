@@ -1,4 +1,5 @@
 // auto-extracted from CRM Starter monolith
+import { promoUsable, promoProblem } from "../../lib/promoRules";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -280,14 +281,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     const code = promoCode.trim().toUpperCase();
     setPromoError("");
     if (!code) return;
-    const todayStr = today();
-    const promo = (promotions || []).find((p: any) =>
-      (p.code || "").toUpperCase() === code &&
-      p.status !== "ended" &&
-      (!p.validTo || p.validTo >= todayStr) &&
-      (!p.usageLimit || (p.redeemedCount || 0) < p.usageLimit)
-    );
+    // Same rule checkout uses (lib/promoRules.ts) — start/end dates, usage
+    // limit, and coupons made for one customer only work for that customer.
+    const matches = (promotions || []).filter((p: any) => (p.code || "").toUpperCase() === code);
+    const promo = matches.find((p: any) => promoUsable(p, { customerId: c?.id }));
     if (promo) { setAppliedPromo({ kind: "promotion", promo }); return; }
+    if (matches.length) { setAppliedPromo(null); setPromoError(promoProblem(matches[0], { customerId: c?.id }) || "Code not recognized or expired"); return; }
     const referrer = (customers || []).find((cust: any) => cust.id !== c?.id && (cust.referralCode || "").toUpperCase() === code);
     if (referrer) { setAppliedPromo({ kind: "referral", referrer }); return; }
     setAppliedPromo(null);
