@@ -286,3 +286,11 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Keyboard focus ring for buttons and links. Many components set
+   focus:outline-none for mouse users; this brings a visible ring back only
+   for keyboard focus (:focus-visible). */
+a:focus-visible, button:focus-visible, [role="button"]:focus-visible, summary:focus-visible {
+  outline: 2px solid currentColor !important;
+  outline-offset: 2px;
+}
