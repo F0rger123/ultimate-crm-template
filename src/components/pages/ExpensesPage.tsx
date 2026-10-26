@@ -1,4 +1,5 @@
 // auto-extracted from CRM Starter monolith
+import { parseDateLoose } from "../../lib/customerImport";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -156,7 +157,9 @@ export function ExpensesPage({ expenses = [], setExpenses, toast = (() => {}) as
   const handleExpenseImport = (rows: Record<string, string>[]) => {
     const imported = rows.map(raw => ({
       id: uid(),
-      date: raw.date || today(),
+      // Audit 2026-10-26: bank exports say "10/05/2026"; reports group by
+      // YYYY-MM-DD, so unconverted dates fell out of every monthly total.
+      date: (raw.date && /^\d{4}-\d{2}-\d{2}$/.test(parseDateLoose(raw.date)) ? parseDateLoose(raw.date) : "") || today(),
       description: raw.description || "Imported expense",
       amount: Number((raw.amount || "").replace(/[^0-9.-]/g, "")) || 0,
       category: raw.category || "Supplies",
@@ -165,8 +168,14 @@ export function ExpensesPage({ expenses = [], setExpenses, toast = (() => {}) as
       taxDeductible: true,
     })).filter(e => e.amount > 0);
     if (imported.length === 0) { toast("No valid rows found — need at least an Amount column", "red"); return; }
-    setExpenses(prev => [...imported, ...prev]);
-    toast(`✅ Imported ${imported.length} expense(s)`, "green");
+    // Re-importing the same statement shouldn't double every expense.
+    const keyOf = (e: any) => `${e.date}|${Number(e.amount).toFixed(2)}|${String(e.description || "").trim().toLowerCase()}`;
+    const have = new Set((expenses || []).map(keyOf));
+    const fresh = imported.filter(e => { const k = keyOf(e); if (have.has(k)) return false; have.add(k); return true; });
+    const skipped = imported.length - fresh.length;
+    if (fresh.length === 0) { toast(`All ${imported.length} expense(s) were already here — nothing new imported`, "yellow"); return; }
+    setExpenses(prev => [...fresh, ...prev]);
+    toast(`✅ Imported ${fresh.length} expense(s)` + (skipped ? ` (${skipped} already here, skipped)` : ""), "green");
   };
 
   const saveMileage = () => {

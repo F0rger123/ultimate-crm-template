@@ -1626,6 +1626,8 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   send_estimate: "send_quotes", send_invoice: "send_quotes",
   notify_all_customers: "mass_messaging", prepare_bulk_text: "mass_messaging", send_bulk_text: "mass_messaging", set_birthday_offer: "mass_messaging",
   schedule_jobs_bulk: "schedule_jobs", create_customers_bulk: "add_customers", update_customers_bulk: "add_customers",
+  // Audit 2026-10-26: texted imports were outside every switch.
+  run_import: "add_customers",
   create_campaign: "automations",
   text_customer: "message_customers", text_phone_number: "message_customers",
   text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",

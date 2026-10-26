@@ -1837,6 +1837,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // same as before.
   const ALFRED_TOOL_CAPABILITY: Record<string, string> = {
     create_customer: "add_customers", attach_file_to_customer: "add_customers", update_customer: "add_customers",
+    // Audit 2026-10-26: bulk imports and price changes were outside every switch.
+    run_import: "add_customers", update_job_price: "modify_jobs", apply_discount_to_estimate: "create_quotes",
     schedule_job: "schedule_jobs",
     reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs", attach_file_to_job: "modify_jobs",
     assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew",

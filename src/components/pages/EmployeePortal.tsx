@@ -695,7 +695,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       }
       const newScheduledTime = shiftScheduledTime(job.scheduledTime, minutes);
       onUpdateJob({
-        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min — notified customer via ${lateChannel === "sms" ? "text" : "email"}${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}` }],
+        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note: `⏱ Running late +${minutes}min — notified customer via ${lateChannel === "sms" ? "text" : "email"}${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}` }],
         ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
       });
       toast(`✅ Message sent to ${customer?.firstName || "customer"}`, "green");
@@ -763,7 +763,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         const html = emailShell(settings, "On My Way", `<p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
       }
-      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
+      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
       toast(`✅ Message sent to ${customer?.firstName || "customer"}`, "green");
       console.log("[Verify] On My Way toast + send — working");
       setOtwOpen(false);
@@ -795,7 +795,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       // the underlying request, just stops waiting on it) and often landed
       // successfully moments later with nobody watching. The outer ceiling
       // now safely exceeds the inner worst case instead of undercutting it.
-      const result = await withTimeout(Promise.resolve(onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }] })), 45000, "Report problem save");
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note }] })), 45000, "Report problem save");
       if (result?.error) {
         console.error("[ReportProblem] — error:", result.error.message);
         toast("Saved locally, but failed to sync — " + result.error.message, "red");
@@ -864,7 +864,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         status: "scheduled",
         scheduledDate: hasDate ? rescheduleDate : "",
         needsReschedule: true,
-        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }],
+        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note }],
       })), 45000, "Reschedule save");
       if (result?.error) {
         console.error("[Reschedule] — error:", result.error.message);
@@ -917,7 +917,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
   const addPhoto = async (type: "before" | "after", dataUrl: string, explicitPairIndex?: number, requirementId?: string) => {
     const id = uid();
-    const caption = (type === "before" ? "Before" : "After") + " — " + today();
+    const caption = (type === "before" ? "Before" : "After") + " — " + localDateStr();
     const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${job.id}/photo-${id}.jpg`, "image/jpeg");
     // BUG FIX — "it matched the wrong photo to the wrong photo. Is there a
     // way we can link a before and after for each photo?" The slider used
@@ -932,7 +932,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     // when the employee wants to link an after to a SPECIFIC earlier
     // before rather than whichever's next in line.
     const pairIndex = explicitPairIndex ?? (job.photos || []).filter((p: any) => p.type === type).length;
-    const newPhoto = url ? { id, type, pairIndex, caption, url, uploadedAt: today() } : { id, type, pairIndex, caption, dataUrl, uploadedAt: today() };
+    const newPhoto = url ? { id, type, pairIndex, caption, url, uploadedAt: localDateStr() } : { id, type, pairIndex, caption, dataUrl, uploadedAt: localDateStr() };
     const nextPhotos = [...(job.photos || []), newPhoto];
     // FEATURE — commercial work-order photo requirements (migration 0094):
     // tags this photo against the requirement it satisfies so
@@ -967,7 +967,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       const id = uid();
       const ext = (file.type.split("/")[1] || "mp4").replace("quicktime", "mov");
       const url = await uploadJobMedia(file, `${job.id}/video-${id}.${ext}`, file.type);
-      const newVideo = url ? { id, url, caption: "Field video", addedAt: today() } : { id, dataUrl, caption: "Field video", addedAt: today() };
+      const newVideo = url ? { id, url, caption: "Field video", addedAt: localDateStr() } : { id, dataUrl, caption: "Field video", addedAt: localDateStr() };
       const nextTags = requirementId ? { ...((job as any).photoRequirementTags || {}), [id]: requirementId } : (job as any).photoRequirementTags;
       // BUG FIX (audit) — unlike addPhoto right above it, this fired
       // "Video added ✓" unconditionally with no timeout wrapper and no
@@ -992,7 +992,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
   const addNote = () => {
     if (!note.trim()) return;
-    // FIX 6 — full ISO timestamp (not just today()'s bare date) so the owner
+    // FIX 6 — full ISO timestamp (not just localDateStr()'s bare date) so the owner
     // can tell when during the day a note was left, not just which day. The
     // "today's field notes" dashboard alerts match on the date PREFIX (see
     // App.tsx / Dashboard.tsx), so this stays compatible with those.
@@ -1487,7 +1487,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         id: uid(), customerId: job.customerId,
         lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
-        status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+        status: "approved" as const, createdAt: localDateStr(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: localDateStr(),
         // The employee has no separate "ownerId" concept of their own here —
         // this invoice belongs to whichever owner the source job belongs to,
         // so inherit it straight off the job row (fetched with owner_id via
@@ -1586,7 +1586,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       patch.amountCollected = Number(job.amount) || 0;
     } else {
       patch.paymentStatus = "Pending";
-      if (invoiceSent) { patch.paymentType = "Invoice"; patch.invoiceSentAt = today(); }
+      if (invoiceSent) { patch.paymentType = "Invoice"; patch.invoiceSentAt = localDateStr(); }
     }
     // Show the summary immediately (local state already reflects completion),
     // but await the actual Supabase write so the toast tells the truth and the
@@ -2717,7 +2717,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 )}
                 <div>
                   <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">Reschedule to (optional)</label>
-                  <input type="date" value={rescheduleDate} min={today()} onChange={e => setRescheduleDate(e.target.value)}
+                  <input type="date" value={rescheduleDate} min={localDateStr()} onChange={e => setRescheduleDate(e.target.value)}
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-700/60" />
                   {rescheduleDate && busyDates.includes(rescheduleDate) && (
                     <div className="text-[10px] text-orange-300/80 mt-1">⚠ You already have another job scheduled that day.</div>
@@ -3507,7 +3507,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [selectedCalDay, setSelectedCalDay] = useState<string | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
-  // FIX 8 — today() is UTC-derived and rolls to the next date ~4-8pm US
+  // FIX 8 — localDateStr() is UTC-derived and rolls to the next date ~4-8pm US
   // local time; scheduledDate is a local calendar date the owner picked, so
   // an evening open of the Calendar tab could pre-select a day that's
   // already "tomorrow" in UTC and show zero jobs for what the employee
@@ -3621,14 +3621,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // device — the existing ExpensesPage.tsx mileage tab is owner-side and
   // localStorage-only, with no way for an employee to submit into it at all.
   const [mileageLogs, setMileageLogs] = useState<any[]>([]);
-  const [mileageForm, setMileageForm] = useState({ date: today(), from: "", to: "", miles: "", purpose: "" });
+  const [mileageForm, setMileageForm] = useState({ date: localDateStr(), from: "", to: "", miles: "", purpose: "" });
   const [mileageSubmitting, setMileageSubmitting] = useState(false);
   // BLOCKER 11 (mobile round 7) — the only "custom period" controls anywhere
   // on this tab were fixed presets (7 days / 4 weeks / 12 months) or the
   // calendar's month prev/next (capped at the current month) — there was no
   // way to actually pick an arbitrary date range as asked for.
   const [payCustomStart, setPayCustomStart] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); });
-  const [payCustomEnd, setPayCustomEnd] = useState(() => today());
+  const [payCustomEnd, setPayCustomEnd] = useState(() => localDateStr());
   // Drives a spinner on the "Share My Location" button for the window between
   // tapping it and the browser's permission prompt resolving — previously the
   // button gave zero feedback during that gap, which read as "does nothing".
@@ -3967,7 +3967,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // mid-shift on the SAME device doesn't lose the running total; nothing
   // here needs a schema change since the final number is only ever written
   // to the existing mileage_logs table on submit, same as manual entry.
-  const dayTrackKey = "crm.dayAutoMiles." + ((myEmployee as any)?.id || "x") + "." + today();
+  const dayTrackKey = "crm.dayAutoMiles." + ((myEmployee as any)?.id || "x") + "." + localDateStr();
   const [dayTrackedMiles, setDayTrackedMiles] = usePersistent<number>(dayTrackKey, 0);
   const gpsWatchIdRef = useRef<number | null>(null);
   const lastGpsPosRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
@@ -4254,7 +4254,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // (fetchDriveTime above) and route optimization (optimizeRoute below).
   const [mileageEstimating, setMileageEstimating] = useState(false);
   const autoEstimateMileage = async () => {
-    const dateStr = mileageForm.date || today();
+    const dateStr = mileageForm.date || localDateStr();
     const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr && j.address).sort((a, b) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
     const origin = mileageForm.from.trim() || homeBaseAddress || dayJobs[0]?.address;
     const destination = mileageForm.to.trim() || dayJobs[dayJobs.length - 1]?.address;
@@ -4293,7 +4293,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // a display bug, submissions were never reaching the table since the
     // multi-tenant RLS rollout. myEmployee.owner_id is the same value
     // written on this employee's own row at invite time.
-    const row = { id: uid(), employee_id: empId, date: mileageForm.date || today(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "approved", owner_id: (myEmployee as any)?.owner_id || null };
+    const row = { id: uid(), employee_id: empId, date: mileageForm.date || localDateStr(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "approved", owner_id: (myEmployee as any)?.owner_id || null };
     try {
       const { error } = await (supabase as any).from("mileage_logs").insert(row);
       if (error) {
@@ -4301,7 +4301,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         toast("Couldn't save mileage — " + error.message, "red");
       } else {
         setMileageLogs(prev => [row, ...prev]);
-        setMileageForm({ date: today(), from: "", to: "", miles: "", purpose: "" });
+        setMileageForm({ date: localDateStr(), from: "", to: "", miles: "", purpose: "" });
         toast("Mileage logged ✓", "green");
       }
     } catch (e: any) {
@@ -5246,7 +5246,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const messageNextJobCustomer = async (job: Job, lateMinutes: number) => {
     const cust = findCustomer(job.customerId);
     if (!cust?.phone && !cust?.email) { toast("No phone or email on file for this customer", "yellow"); return; }
-    if (job.scheduledDate && job.scheduledDate !== today()) {
+    if (job.scheduledDate && job.scheduledDate !== localDateStr()) {
       const ok = window.confirm(`This job is scheduled for ${job.scheduledDate}, not today. Send the "on my way" message anyway?`);
       if (!ok) return;
     }
@@ -6495,7 +6495,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           const html = emailShell(settings, "On My Way", `<p>${msg}</p>`);
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
         }
-        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwCardChannel === "sms" ? "text" : "email"}` }] });
+        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note: `📍 On my way message sent via ${otwCardChannel === "sms" ? "text" : "email"}` }] });
         toast(`✅ Message sent to ${customer.firstName || "customer"}`, "green");
         setOtwOpenJobId(null);
       } catch (err: any) {
@@ -6533,7 +6533,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }
         const newScheduledTime = shiftScheduledTime(job.scheduledTime, minutes);
         updateJob(job.id, {
-          commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified via ${lateCardChannel === "sms" ? "text" : "email"}` }],
+          commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified via ${lateCardChannel === "sms" ? "text" : "email"}` }],
           ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
         });
       } catch (err: any) {
@@ -7265,10 +7265,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const isTodayTs = (v: any): boolean => {
                 if (!v) return false;
                 const d = typeof v === "number" ? new Date(v) : new Date(String(v));
-                return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === today();
+                return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === localDateStr();
               };
               const sendEndOfDaySummary = async (finalHours: number) => {
-                const todayStr = today();
+                const todayStr = localDateStr();
                 const todaysJobs = myJobs.filter(j => j.scheduledDate === todayStr || isTodayTs(j.completedAt) || isTodayTs(j.arrivedAt));
                 const completedToday = todaysJobs.filter(j => j.status === "completed");
                 const loggedHoursToday = Math.round(todaysJobs.reduce((s, j) => s + (Number(j.loggedHours) || 0), 0) * 100) / 100;
@@ -7410,7 +7410,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   stopAutoMileageTracking();
                   if (dayTrackedMiles > 0.1 && empId) {
                     const autoMiles = Math.round(dayTrackedMiles * 100) / 100;
-                    const autoRow = { id: uid(), employee_id: empId, date: today(), from: "", to: "", miles: autoMiles, purpose: "Auto-tracked shift mileage", status: "approved", owner_id: (myEmployee as any)?.owner_id || null };
+                    const autoRow = { id: uid(), employee_id: empId, date: localDateStr(), from: "", to: "", miles: autoMiles, purpose: "Auto-tracked shift mileage", status: "approved", owner_id: (myEmployee as any)?.owner_id || null };
                     (supabase as any).from("mileage_logs").insert(autoRow)
                       .then((r: any) => {
                         if (r?.error) { console.error("[Mileage] auto-submit failed:", r.error.message); toast?.("Mileage tracked (" + autoMiles + " mi) but failed to sync — log it manually in the Mileage tab", "yellow"); }
@@ -8680,7 +8680,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               .disclaimer{margin-top:32px;padding:12px;background:#fffbf0;border:1px solid #f0c040;border-radius:6px;font-size:11px;color:#555}
               @media print{body{padding:20px}}</style></head><body>
               <div class="header">
-                <div><h1>${settings.companyName || "CRM Starter"}</h1><p style="color:#666;margin-top:4px">Employee Tax Summary — ${empName} · ${thisYear} · Generated ${today()}</p></div>
+                <div><h1>${settings.companyName || "CRM Starter"}</h1><p style="color:#666;margin-top:4px">Employee Tax Summary — ${empName} · ${thisYear} · Generated ${localDateStr()}</p></div>
               </div>
               <div class="kpis">
                 <div class="kpi"><label>YTD Gross Earnings</label><div class="val">$${ytdGross.toFixed(2)}</div></div>
@@ -9052,7 +9052,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         <div className="flex items-center gap-2 text-xs text-white/60">
                           <input type="date" value={payCustomStart} max={payCustomEnd} onChange={e => setPayCustomStart(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-xs text-white" />
                           <span>to</span>
-                          <input type="date" value={payCustomEnd} min={payCustomStart} max={today()} onChange={e => setPayCustomEnd(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-xs text-white" />
+                          <input type="date" value={payCustomEnd} min={payCustomStart} max={localDateStr()} onChange={e => setPayCustomEnd(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-xs text-white" />
                         </div>
                       )}
                       <div>

@@ -1,4 +1,5 @@
 // auto-extracted from CRM Starter monolith
+import { parseDateLoose } from "../../lib/customerImport";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -191,7 +192,9 @@ export function PersonalBudgetPage({ toast }) {
   const handlePersonalImport = (rows: Record<string, string>[]) => {
     const imported = rows.map(raw => ({
       id: uid(),
-      date: raw.date || today(),
+      // Audit 2026-10-26: bank exports say "10/05/2026"; reports group by
+      // YYYY-MM-DD, so unconverted dates fell out of every monthly total.
+      date: (raw.date && /^\d{4}-\d{2}-\d{2}$/.test(parseDateLoose(raw.date)) ? parseDateLoose(raw.date) : "") || today(),
       description: raw.description || "Imported transaction",
       amount: Math.abs(Number((raw.amount || "").replace(/[^0-9.-]/g, "")) || 0),
       category: raw.category || "Other",

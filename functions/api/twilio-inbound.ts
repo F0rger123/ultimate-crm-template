@@ -2,16 +2,25 @@
 // SMS into the owner's Inbox (InboxPage's pollTwilioIncoming). Credentials
 // are sent in the POST body rather than a query string so they don't end up
 // logged in any CDN/proxy access log.
-import { getOwnerSecrets } from "./_lib/ownerSecrets";
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
     let { sid, token, since, ownerId } = await context.request.json() as {
       sid?: string; token?: string; since?: string; ownerId?: string;
     };
-    // SECURITY FIX — resolved server-side from owner_secrets when ownerId is
-    // given, same as twilio-send.ts (see migration 0085's comment).
+    // SECURITY FIX (audit 2026-10-26) — the business is the SIGNED-IN
+    // caller's, never the ownerId in the body. It used to load the Twilio
+    // credentials of whatever ownerId was sent, with no sign-in check — and
+    // the owner id is public (it's in the trash-can signup link), so anyone
+    // could read a business's last 50 incoming texts. Same rule as
+    // twilio-send.ts.
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+    ownerId = accessToken ? (await resolveCallerOwnerId(accessToken).catch(() => null)) || undefined : undefined;
+    if (!ownerId && !(sid && token)) {
+      return new Response(JSON.stringify({ error: "Sign in again to check messages." }), { status: 401, headers: { "Content-Type": "application/json" } });
+    }
     if (ownerId && serviceRoleKey) {
       const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
       if (secrets?.twilioAuthToken) { sid = secrets.twilioAccountSid || sid; token = secrets.twilioAuthToken; }

@@ -553,9 +553,12 @@ export const pollTwilioIncoming = async (
   // AUDIT 6 — same CORS blocker as twilioSend; route through the same-origin
   // Pages Function instead of api.twilio.com directly.
   try {
+    // The server only reads the SIGNED-IN business's texts (see twilio-inbound.ts).
+    let accessToken: string | undefined;
+    try { accessToken = (await withTimeout(supabase.auth.getSession(), 8000, "Get session")).data?.session?.access_token; } catch { /* server answers 401 */ }
     const res = await fetch("/api/twilio-inbound", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
       body: JSON.stringify({ sid: twilioSid, token: twilioToken, since, ownerId: currentOwnerIdForSms }),
     });
     if (!res.ok) { console.warn("[Twilio] inbound poll failed:", res.status); return []; }
