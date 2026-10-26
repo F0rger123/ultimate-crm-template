@@ -31,6 +31,7 @@
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
+import { effectiveModel } from "./modelOverrides";
 import { prepareImportFromFile, runTextImport } from "./textImport";
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
 import { stripMarkdownForSms } from "./textFormat";
@@ -90,7 +91,7 @@ const callSmsModel = async (
   messages: Array<{ role: string; content: any }>,
   tools: any[],
 ): Promise<{ text: string; toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }>; stopReason: string; raw: unknown }> => {
-  const def = SMS_MODELS[modelKey];
+  const def = effectiveModel(modelKey, SMS_MODELS[modelKey]);
   if (!def) throw new Error(`Unknown model "${modelKey}"`);
 
   if (def.provider === "anthropic") {
@@ -381,7 +382,7 @@ export const askModelJson = async (modelKeys: Record<string, string>, modelPrior
 
 // One tiny request to one model — for the Alfred health check.
 export const pingSmsModel = async (modelKey: string, apiKey: string): Promise<{ ok: boolean; ms: number; name: string; error?: string }> => {
-  const def = SMS_MODELS[modelKey];
+  const def = effectiveModel(modelKey, SMS_MODELS[modelKey]);
   const t0 = Date.now();
   if (!def) return { ok: false, ms: 0, name: modelKey, error: "unknown model" };
   try {
@@ -3509,7 +3510,7 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
   for (const modelKey of chain) {
     if (Date.now() > overallDeadline) break;
     const apiKey = modelKeys[modelKey];
-    const def = SMS_MODELS[modelKey];
+    const def = effectiveModel(modelKey, SMS_MODELS[modelKey]);
     let rounds = 0;
     let localFinal = "";
     // Windowed + time-labeled for the model (see withTimeLabels) —

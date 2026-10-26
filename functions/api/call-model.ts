@@ -17,28 +17,10 @@
 // sending already being employee-usable via twilio-send.ts).
 
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+import { MODELS } from "./_lib/modelSlots";
+import { loadModelOverrides, effectiveModel, nvidiaFallbacks } from "./_lib/modelOverrides";
 
-type ModelDef = { modelId: string; provider: "anthropic" | "openai" | "google" | "groq" | "mistral" | "nvidia" | "openrouter" | "cerebras"; endpoint: string };
-
-// Minimal mirror of src/lib/api.ts's MODELS — only the fields this proxy
-// actually needs (provider/endpoint/modelId), duplicated rather than
-// cross-imported since Cloudflare Pages Functions build separately from the
-// Vite app under src/. Keep in sync with src/lib/api.ts's MODELS if a model
-// is added/renamed/removed there.
-const MODELS: Record<string, ModelDef> = {
-  claude: { modelId: "claude-sonnet-5-5", provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages" },
-  openai: { modelId: "gpt-4o", provider: "openai", endpoint: "https://api.openai.com/v1/chat/completions" },
-  gemini: { modelId: "gemini-2.5-flash", provider: "google", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" },
-  groq: { modelId: "openai/gpt-oss-120b", provider: "groq", endpoint: "https://api.groq.com/openai/v1/chat/completions" },
-  mistral: { modelId: "mistral-large-latest", provider: "mistral", endpoint: "https://api.mistral.ai/v1/chat/completions" },
-  nvidia_kimi: { modelId: "deepseek-ai/deepseek-v4.1-flash", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  nvidia_nemotron: { modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  nvidia_muse: { modelId: "meta/muse-glimmer-30b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  nvidia_deepseek_r1: { modelId: "moonshotai/kimi-k2.6", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  nvidia_qwen: { modelId: "nvidia/nemotron-3-super-120b-a12b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  openrouter: { modelId: "nvidia/nemotron-3-super-120b-a12b:free", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1/chat/completions" },
-  cerebras: { modelId: "gpt-oss-120b", provider: "cerebras", endpoint: "https://api.cerebras.ai/v1/chat/completions" },
-};
+// The model table lives in _lib/modelSlots.ts (shared with the model watch).
 
 const OPENROUTER_FREE_FALLBACKS = [
   "nvidia/nemotron-3-super-120b-a12b:free",
@@ -181,7 +163,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const ownerId = await resolveCallerOwnerId(accessToken);
     if (!ownerId) return json({ error: "Not signed in." }, 401);
 
-    const def = MODELS[body.modelId];
+    // A model the provider retired is swapped for a working one by the model watch.
+    await loadModelOverrides(serviceRoleKey);
+    const def = effectiveModel(body.modelId, MODELS[body.modelId]);
     if (!def) return json({ error: `Unknown model key: "${body.modelId}"` }, 400);
     const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
     const apiKey = secrets?.modelKeys?.[body.modelId] || "";
@@ -340,7 +324,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
       }
     } else if (def.provider === "nvidia" && !hasImageBlock(body.messages)) {
-      modelCandidates = Array.from(new Set([def.modelId, ...NVIDIA_FALLBACKS]));
+      modelCandidates = Array.from(new Set([def.modelId, ...nvidiaFallbacks(NVIDIA_FALLBACKS)])).slice(0, 4);
     } else modelCandidates = [def.modelId];
 
     const isVisionRequest = def.provider === "openrouter" && hasImageBlock(body.messages);

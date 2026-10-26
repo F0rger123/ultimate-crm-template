@@ -29,6 +29,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { AlfredHealthPanel } from "./AlfredHealthPanel";
+import { ModelWatchPanel } from "./ModelWatchPanel";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "./Glass";
 import { GBtn } from "./GBtn";
@@ -176,6 +177,7 @@ export function AIModelsSection({ f, setF, setSettings, modelStatus, setModelSta
       </div>
 
       <AlfredHealthPanel toast={toast} />
+      <ModelWatchPanel toast={toast} />
 
       {/* Master failover toggle */}
       <Glass className="p-4 !bg-gradient-to-br !from-purple-950/20 !to-black/60 !border-purple-700/40">

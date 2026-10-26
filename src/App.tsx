@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
+import { fetchModelWatch, takeNewModelWatchEvents } from "./lib/modelWatch";
 import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
@@ -2094,6 +2095,18 @@ export function App() {
   const [notifications, setNotifications] = usePersistent<AppNotification[]>("crm.notifications", []);
   const NOTIFICATIONS_CAP = 300;
   const deleteNotification = (id: string) => setNotifications((prev: AppNotification[]) => prev.filter(n => n.id !== id));
+  // Model watch (functions/api/_lib/modelWatch.ts): a key that stopped
+  // working, an account out of credit, or a model swapped automatically
+  // shows up in the bell — once, the first time this browser sees it.
+  const modelWatchCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!crmUserId || modelWatchCheckedRef.current) return;
+    modelWatchCheckedRef.current = true;
+    fetchModelWatch("status").then(s => {
+      const fresh = takeNewModelWatchEvents(s);
+      if (fresh.length) setNotifications((prev: AppNotification[]) => [...fresh.map(e => ({ id: uid(), text: e.text, at: Date.parse(e.at) || Date.now(), read: false, category: "system" as const, page: "settings" })), ...prev].slice(0, 200));
+    }).catch(() => {});
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
   const clearAllNotifications = () => setNotifications([]);
   const markAllNotificationsRead = () => setNotifications((prev: AppNotification[]) => prev.map(n => ({ ...n, read: true })));
   const markNotificationRead = (id: string) => setNotifications((prev: AppNotification[]) => prev.map(n => n.id === id ? { ...n, read: true } : n));

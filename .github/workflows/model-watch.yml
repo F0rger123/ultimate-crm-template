@@ -1,0 +1,34 @@
+# Daily AI model watch (functions/api/_lib/modelWatch.ts): tests every AI
+# model the CRM uses, swaps models a provider retired for working ones, and
+# records new free models. The app's own scheduler (/api/check-reminders)
+# also runs it every 6 hours when that scheduler is set up; this makes sure
+# it runs at least once a day either way.
+#
+# Settings (repo → Settings → Secrets and variables → Actions):
+#   vars.APP_URL            the live site, e.g. https://your-crm.pages.dev (required)
+#   secrets.MODEL_WATCH_KEY only if MODEL_WATCH_KEY / REMINDERS_CRON_SECRET is
+#                           set in Cloudflare Pages
+name: Model watch
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run the model watch
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          KEY: ${{ secrets.MODEL_WATCH_KEY }}
+        run: |
+          if [ -z "$APP_URL" ]; then echo "Set the APP_URL repository variable to the live site to turn this on."; exit 0; fi
+          url="$APP_URL/api/model-watch"
+          if [ -n "$KEY" ]; then url="$url?key=$KEY&force=1"; fi
+          code=$(curl -s -o out.json -w "%{http_code}" --max-time 300 "$url")
+          echo "HTTP $code"
+          cat out.json | head -c 2000; echo
+          test "$code" = "200"

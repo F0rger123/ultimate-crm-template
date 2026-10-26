@@ -29,6 +29,7 @@
 // customer's opt-in flag flipping at the business whose Twilio number was
 // guessed.
 
+import { loadModelOverrides } from "./_lib/modelOverrides";
 import { transcribeAudioBuffer, TRANSCRIBE_SETUP_HELP } from "./_lib/transcribe";
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
@@ -512,6 +513,8 @@ const isTranscriptionFailureNote = (text: string): boolean => text.startsWith("[
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string>; waitUntil: (p: Promise<any>) => void }) => {
   try {
+    // Replacement models from the model watch (cached 10 min).
+    await loadModelOverrides(context.env.SUPABASE_SERVICE_ROLE_KEY).catch(() => null);
     const raw = await context.request.text();
     const params = Object.fromEntries(new URLSearchParams(raw));
     // AUDIT #3.4 (round 4) — unconditional entry log, independent of which

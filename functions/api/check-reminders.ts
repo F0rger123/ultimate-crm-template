@@ -20,13 +20,14 @@
 // controls), just slightly more guessable as an endpoint to hit repeatedly
 // (harmless — sending an already-sent reminder again is prevented by the
 // `sent` flag, checked and set atomically per-row below).
+import { runModelWatch } from "./_lib/modelWatch";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 import { SUPABASE_URL } from "./_lib/env";
 import { continueBulkSends } from "./_lib/bulkTextSend";
 import { runBirthdayOffers } from "./_lib/birthdayOffers";
 
 
-export const onRequest = async (context: { request: Request; env: Record<string, string> }) => {
+export const onRequest = async (context: { request: Request; env: Record<string, string>; waitUntil?: (p: Promise<any>) => void }) => {
   const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceRoleKey) {
     return new Response(JSON.stringify({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }), { status: 500, headers: { "Content-Type": "application/json" } });
@@ -38,6 +39,11 @@ export const onRequest = async (context: { request: Request; env: Record<string,
   }
 
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+
+  // Model watch (_lib/modelWatch.ts): checks AI models and swaps retired ones
+  // at most every 6 hours; runs in the background so reminders aren't delayed.
+  const watch = runModelWatch(context.env).catch((e: any) => console.warn("[check-reminders] model watch failed:", e?.message));
+  if (context.waitUntil) context.waitUntil(watch);
 
   // Same scheduler also finishes owner-approved bulk texts that didn't fit
   // in one go (_lib/bulkTextSend.ts) and sends birthday coupons

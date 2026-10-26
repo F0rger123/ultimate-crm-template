@@ -12,6 +12,7 @@
 // employeeName the model could substitute to act as someone else, and
 // nothing here touches other employees, customers, money, or CRM-wide data.
 
+import { effectiveModel } from "./modelOverrides";
 import { stripMarkdownForSms } from "./textFormat";
 import { SUPABASE_URL } from "./env";
 
@@ -357,7 +358,7 @@ const executeTool = async (ctx: Ctx, employee: any, name: string, input: Record<
 };
 
 const callModel = async (modelKey: string, apiKey: string, systemPrompt: string, messages: Array<{ role: string; content: any }>, tools: any[]): Promise<{ text: string; toolUses: Array<{ id: string; name: string; input: any }>; stopReason: string; raw: unknown }> => {
-  const def = SMS_MODELS[modelKey];
+  const def = effectiveModel(modelKey, SMS_MODELS[modelKey]);
   if (def.provider === "anthropic") {
     const res = await fetch(def.endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: def.modelId, max_tokens: def.maxTokens, system: systemPrompt, messages, tools }) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
