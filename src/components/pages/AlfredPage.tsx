@@ -1095,12 +1095,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // most likely right when a conversation is still finishing its initial
   // load/sync — the replay rendered Alfred's own generated text as a
   // role:"user" message. Queuing the flag alongside the text fixes that.
-  const pendingFirstSendRef = useRef<{ text: string; skipVisibleMessage?: boolean } | null>(null);
+  const pendingFirstSendRef = useRef<{ text: string; skipVisibleMessage?: boolean; display?: string } | null>(null);
   useEffect(() => {
     if (active && pendingFirstSendRef.current) {
       const queued = pendingFirstSendRef.current;
       pendingFirstSendRef.current = null;
-      send(queued.text, { skipVisibleMessage: queued.skipVisibleMessage });
+      send(queued.text, { skipVisibleMessage: queued.skipVisibleMessage, display: queued.display });
     }
   }); // deliberately no deps — runs after every render, guarded by the ref itself
 
@@ -5208,7 +5208,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     toast(e.title, "red");
     onNotify?.({ text: "Alfred: " + e.title, detail: e.message });
   };
-  const send = async (overrideText?: string, opts?: { skipVisibleMessage?: boolean }) => {
+  // `display` is what the owner's bubble shows when the model text carries
+  // internal notes (import batch ids, file previews) they never typed.
+  const send = async (overrideText?: string, opts?: { skipVisibleMessage?: boolean; display?: string }) => {
     const text = (overrideText ?? input).trim();
     if (!text) return;
     if (!loading) { turnStartRef.current = Date.now(); directSendsRef.current = 0; }
@@ -5237,17 +5239,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       setActiveConvId(cid);
       setInput("");
       setShowSlash(false);
-      pendingFirstSendRef.current = { text, skipVisibleMessage: opts?.skipVisibleMessage };
+      pendingFirstSendRef.current = { text, skipVisibleMessage: opts?.skipVisibleMessage, display: opts?.display };
       return;
     }
 
-    const userMsg = { id: uid(), role: "user", content: text, timestamp: Date.now() };
+    const shown = opts?.display?.trim() || text;
+    const userMsg: any = { id: uid(), role: "user", content: shown, ...(shown !== text ? { modelContent: text } : {}), timestamp: Date.now() };
     if (!opts?.skipVisibleMessage) {
       appendMessage(userMsg);
 
       // Auto-title from first user message
       if (active && (active.title === "New chat" || !active.title)) {
-        const title = text.length > 42 ? text.slice(0, 42) + "…" : text;
+        const title = shown.length > 42 ? shown.slice(0, 42) + "…" : shown;
         updateActive({ title });
       }
     }
@@ -5468,7 +5471,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       console.log("[Personality] systemPrompt personality clause:", getPersonality(activePersonality).systemPrompt.slice(0, 80) + "…");
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds
-      let convMessages = [...chats, userMsg].slice(-12).map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
+      let convMessages = [...chats, userMsg].slice(-12).map((m: any) => ({ role: m.role === "user" ? "user" : "assistant", content: m.modelContent || m.content }));
       let rounds = 0;
       let finalText = "";
       const toolTraces = [];
@@ -5887,16 +5890,16 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
   // reading from the staged pendingAttachments instead of a live FileList,
   // and threading the owner's typed caption into the single-attachment
   // path too (it never had anywhere to type one before this).
-  const sendWithAttachments = async (caption: string, attachments: typeof pendingAttachments) => {
+  const sendWithAttachments = async (caption: string, attachments: typeof pendingAttachments, display = caption) => {
     if (getVisionModelChain().length === 0) {
-      appendMessage({ id: uid(), role: "user", content: caption || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`), imagePreviews: attachments.filter(a => !a.isPdf).map(a => a.dataUrl), timestamp: Date.now() } as any);
+      appendMessage({ id: uid(), role: "user", content: display || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`), imagePreviews: attachments.filter(a => !a.isPdf).map(a => a.dataUrl), timestamp: Date.now() } as any);
       reportAlfredError(new Error("Reading files needs an API key — add one in Settings → AI Models."));
       return;
     }
     const msgId = uid();
     appendMessage({
       id: msgId, role: "user",
-      content: caption || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`),
+      content: display || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`),
       imagePreviews: attachments.filter(a => !a.isPdf).map(a => a.dataUrl),
       timestamp: Date.now(),
     } as any);
@@ -6044,11 +6047,14 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       setShowSlash(false);
       const notes = tables.length ? await stashTableFiles(tables.map(a => a.file)) : [];
       const caption = [await withSheetNotes(stashLongPaste(raw.trim())), ...notes].filter(Boolean).join("\n\n");
-      if (media.length) await sendWithAttachments(caption, media);
-      else await send(caption || "Import this list.");
+      // The bubble shows what the owner typed plus the file names, never the
+      // batch ids and previews meant for the model.
+      const display = [raw.trim(), attachments.map(a => "📎 " + a.file.name).join("\n")].filter(Boolean).join("\n\n");
+      if (media.length) await sendWithAttachments(caption, media, display);
+      else await send(caption || "Import this list.", { display });
     } else {
       const text = await withSheetNotes(stashLongPaste(raw));
-      await send(text === raw ? overrideText : text);
+      await send(text === raw ? overrideText : text, text === raw ? undefined : { display: raw });
     }
   };
   useEffect(() => { sendMessageRef.current = sendMessage; }); // no deps — always the latest, see sendMessageRef's comment
