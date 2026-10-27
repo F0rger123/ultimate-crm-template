@@ -12,6 +12,7 @@ import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpG
 import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { BrandMark } from "../ui/BrandMark";
+import { AuthHeader, AuthRoleTabs } from "../ui/AuthRoleTabs";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
@@ -3187,11 +3188,14 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
 
   return (
     <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
-      <header className="sticky top-0 z-20 bg-black/95 border-b border-brand-900/30 px-4 py-3 flex items-center gap-3">
-        <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-white/60 hover:text-white -ml-2">
-          <ChevronLeft size={20} />
+      <header className="sticky top-0 z-20 bg-black/95 border-b border-white/10 h-[60px] px-4 flex items-center gap-3">
+        <button onClick={onClose} className="flex items-center gap-1 px-2 py-1.5 rounded-xl hover:bg-white/10 text-sm text-white/60 hover:text-white -ml-2">
+          <ChevronLeft size={18} /> Dashboard
         </button>
-        <div className="flex-1 font-semibold">Team Portal</div>
+        <div className="flex-1 min-w-0 flex items-baseline gap-2 truncate">
+          <span className="hidden sm:inline font-bold text-lg tracking-tight">CRM Starter</span>
+          <span className="text-sm font-semibold text-white/70">Team Portal</span>
+        </div>
         <select
           value={selectedEmpId}
           onChange={e => setSelectedEmpId(e.target.value)}
@@ -6134,29 +6138,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 the owner's real uploaded logoUrl when set — the employee
                 portal login screen was the one place still stuck on the
                 generic mark regardless. */}
-            {((settings as any)?.logoUrl || inviteBranding?.logoUrl) ? (
-              <img src={(settings as any)?.logoUrl || inviteBranding?.logoUrl} alt={settings.companyName || inviteBranding?.companyName || "Company logo"} className="w-16 h-16 rounded-2xl object-contain mx-auto mb-4 shadow-lg bg-white/5" />
-            ) : (
-              <div className="w-16 h-16 rounded-2xl bg-brand-600 flex items-center justify-center mx-auto mb-4 shadow-lg text-brand-fg">
-                <BrandMark className="w-10 h-10" />
-              </div>
-            )}
-            <div className="text-xl font-bold">{settings.companyName || inviteBranding?.companyName || "CRM Starter"}</div>
-            <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
+            <AuthHeader subtitle={inviteRecord ? `Create your crew account${inviteBranding?.companyName ? " for " + inviteBranding.companyName : ""}` : "Employee Portal"} />
           </div>
 
           {!inviteRecord && (
-            <div className="flex gap-1 p-1 mb-5 rounded-xl bg-white/5 border border-white/10">
-              <button onClick={onClose} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
-                Owner / Manager
-              </button>
-              <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-brand-600/30 border border-brand-500/40 text-white transition">
-                Employee Portal
-              </button>
-              <button onClick={() => { window.location.hash = "/client"; }} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
-                Customer
-              </button>
-            </div>
+            <div className="mb-5"><AuthRoleTabs active="employee" /></div>
           )}
 
           <div className="space-y-3">

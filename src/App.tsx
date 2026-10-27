@@ -24,6 +24,7 @@ import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL,
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
 import { BrandMark } from "./components/ui/BrandMark";
+import { AuthHeader, AuthRoleTabs } from "./components/ui/AuthRoleTabs";
 import { PageFade } from "./components/ui/PageFade";
 import { GlobalSearch } from "./components/ui/GlobalSearch";
 
@@ -4185,11 +4186,9 @@ export function App() {
             setPage((consumeOAuthReturnPage() || "dashboard") as any);
             setOauthProcessing(false);
           }
-          // Existing email/password owner session — ensure not stuck on portal
-          // (layout itself still follows real screen width, see isMobile above)
-          if (initial && !initIsGoogle) {
-            setPage(prev => prev === "portal" ? "dashboard" : prev);
-          }
+          // A signed-in owner on #/portal always gets the Team Portal (it used to
+          // be sent to the dashboard on load for an email login only, so the
+          // same link showed different screens).
         }
 
         // Load employees + jobs + customers from Supabase on initial load
@@ -5243,19 +5242,7 @@ export function App() {
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 overflow-y-auto overflow-x-hidden">
         <div className="w-full max-w-sm flex flex-col items-center gap-6 py-8">
-          <div className="text-center">
-            <div className="w-20 h-20 rounded-3xl bg-brand-600 flex items-center justify-center mx-auto mb-5 text-brand-fg">
-              <BrandMark className="w-11 h-11" />
-            </div>
-            <div className="text-2xl font-bold tracking-tight">CRM Starter</div>
-            {/* UI POLISH — the signup screen used to show the exact same
-                generic "Business Management" subtitle whether you were
-                signing in or creating a brand-new account, giving no signal
-                this is where a free trial actually starts. */}
-            <div className="text-sm text-white/40 mt-1">
-              {ownerLoginMode === "register" ? "Start your free 14-day trial — no card required" : (settings.companyName || "Business Management")}
-            </div>
-          </div>
+          <AuthHeader subtitle={ownerLoginMode === "register" ? "Start your free 14-day trial — no card required" : "Owner & manager sign in"} />
 
           {/* BUG FIX — "signing up shouldn't ask owner vs employee." A brand-
               new registration is always a new business owner (employees never
@@ -5265,17 +5252,7 @@ export function App() {
               employee could land on the main URL by mistake), so it only
               shows in login mode, not during registration. */}
           {ownerLoginMode === "login" && (
-            <div className="w-full flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10">
-              <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-brand-600/30 border border-brand-500/40 text-white transition">
-                Owner / Manager
-              </button>
-              <button onClick={() => setPage("portal")} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
-                Employee Portal
-              </button>
-              <button onClick={() => { window.location.hash = "/client"; }} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
-                Customer
-              </button>
-            </div>
+            <AuthRoleTabs active="owner" />
           )}
 
           {pendingCheckoutSession?.status === "verifying" && (
