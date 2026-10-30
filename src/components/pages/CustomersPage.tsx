@@ -86,6 +86,9 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+// Customers drawn at a time; "Show more" adds the next batch.
+const CUSTOMER_LIST_PAGE = 50;
+
 export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, onSpotlight = (_step: { page: string; type?: string; id?: string; label?: string }) => {}, planLimits, onUpgrade = () => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; planLimits?: PlanLimits; onUpgrade?: () => void }) {
   const [search, setSearch] = useState("");
   // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
@@ -93,14 +96,6 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   const { confirmAsync, ConfirmDialog } = useConfirm();
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the row Alfred
   // just created/touched, driven by App.tsx's spotlight queue.
-  useEffect(() => {
-    if (!highlightId) return;
-    // Two card renderings exist (mobile-stacked + desktop-table); only one
-    // is actually visible at a given viewport width — scroll to whichever
-    // one has layout (offsetParent is null for display:none elements).
-    const els = document.querySelectorAll<HTMLElement>(`[data-customer-id="${highlightId}"]`);
-    Array.from(els).find(el => el.offsetParent !== null)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [highlightId]);
   const spotlightCls = (id: string) => highlightId === id ? " ring-2 ring-brand-500 shadow-[0_0_25px_rgba(255,255,255,0.65)]" : "";
   // FEATURE — filter/sort controls for the customer list (previously just a
   // plain text search with no way to sort or filter by tag).
@@ -318,6 +313,32 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       return 0;
     });
   const toggleBulkAll = () => setBulkSelected(bulkSelected.length === filtered.length ? [] : filtered.map(c => c.id));
+  // BUG FIX (user report: iPhone Safari "A problem repeatedly occurred" on
+  // #/customers) — the list drew every customer twice, once as a phone card
+  // and once as a table row, with CSS hiding one set. 3,000 customers made
+  // about 196,000 page elements, each phone card with its own blur layer, and
+  // Safari killed the tab for using too much memory. Now only the layout for
+  // this screen size is drawn, a page at a time. Search, filters, sort, select
+  // all and exports still work on the whole list (`filtered`).
+  const [isDesktopList, setIsDesktopList] = useState(() => window.matchMedia("(min-width: 640px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 640px)");
+    const onChange = () => setIsDesktopList(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const [listLimit, setListLimit] = useState(CUSTOMER_LIST_PAGE);
+  useEffect(() => { setListLimit(CUSTOMER_LIST_PAGE); }, [search, tagFilter, folderFilter, sortBy]);
+  const highlightIndex = highlightId ? filtered.findIndex(c => c.id === highlightId) : -1;
+  useEffect(() => {
+    if (highlightIndex >= listLimit) setListLimit(highlightIndex + 1);
+  }, [highlightIndex, listLimit]);
+  const highlightShown = highlightIndex >= 0 && highlightIndex < listLimit;
+  useEffect(() => {
+    if (!highlightId) return;
+    document.querySelector<HTMLElement>(`[data-customer-id="${highlightId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightId, highlightShown]);
+  const shownCustomers = filtered.slice(0, listLimit);
 
   const downloadSelectedCsv = () => {
     const rows = [["firstName", "lastName", "email", "phone", "address", "totalSpent", "createdAt"]];
@@ -812,11 +833,11 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>}
 
       {/* Mobile: stacked cards (no horizontal scroll needed to reach actions) */}
-      <div className="sm:hidden space-y-2">
-        {filtered.map(c => {
+      {!isDesktopList && <div className="space-y-2">
+        {shownCustomers.map(c => {
           const sel = mergePair.includes(c.id);
           return (
-            <Glass key={c.id} data-customer-id={c.id} className={"p-3 transition-shadow " + (sel ? "!bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "") + spotlightCls(c.id)}>
+            <Glass key={c.id} data-customer-id={c.id} className={"p-3 !backdrop-blur-none transition-shadow " + (sel ? "!bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "") + spotlightCls(c.id)}>
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-start gap-2 min-w-0">
                   {mergeMode && <input type="checkbox" checked={sel} onChange={() => toggleMerge(c.id)} className="w-4 h-4 mt-1 accent-brand-600 shrink-0" />}
@@ -844,10 +865,10 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             </Glass>
           );
         })}
-      </div>
+      </div>}
 
       {/* Desktop/tablet: table */}
-      <Glass className="overflow-hidden hidden sm:block">
+      {isDesktopList && <Glass className="overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -861,7 +882,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
               </tr>
             </thead>
             <tbody>
-              {filtered.map(c => {
+              {shownCustomers.map(c => {
                 const sel = mergePair.includes(c.id);
                 return (
                   <tr key={c.id}
@@ -898,7 +919,14 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             </tbody>
           </table>
         </div>
-      </Glass>
+      </Glass>}
+
+      {filtered.length > shownCustomers.length && (
+        <div className="flex flex-col items-center gap-2 py-2">
+          <div className="text-xs text-white/50">Showing {shownCustomers.length} of {filtered.length}</div>
+          <GBtn onClick={() => setListLimit(n => n + CUSTOMER_LIST_PAGE)}>Show more</GBtn>
+        </div>
+      )}
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
       <ImportDataModal open={!!importOpen} initialTab={importOpen || "file"} onClose={() => setImportOpen(false)} title="Import Customers" fieldMap={CUSTOMER_FIELD_MAP} fieldLabels={CUSTOMER_FIELD_LABELS} fieldExclude={CUSTOMER_FIELD_EXCLUDE} onImport={handleCustomerImport} toast={toast}
